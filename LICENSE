@@ -1,0 +1,271 @@
+MIT License
+
+Copyright (c) 2026 zls3434
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+THIRD-PARTY SOFTWARE NOTICES AND INFORMATION
+
+This project relies on third-party libraries. Below is a summary of the
+licenses used by these dependencies. This project is compliant with all
+applicable license terms.
+
+--------------------------------------------------------------------------------
+1. MIT LICENSE
+--------------------------------------------------------------------------------
+
+The following dependencies are licensed under the MIT License:
+
+- axios@1.15.2 (https://github.com/axios/axios)
+- qrcode@1.5.4 (https://github.com/soldair/node-qrcode)
+- ws@8.20.0 (https://github.com/websockets/ws)
+- @types/node@20.19.39
+- @types/qrcode@1.5.6
+- @types/vscode@1.118.0
+- @types/ws@8.18.1
+- @typescript-eslint/eslint-plugin@7.18.0
+- @vscode/vsce@2.32.0
+- eslint@8.57.1
+- ts-loader@9.5.7
+- webpack@5.106.2
+- webpack-cli@5.1.4
+
+MIT License text:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+--------------------------------------------------------------------------------
+2. APACHE LICENSE 2.0
+--------------------------------------------------------------------------------
+
+The following dependencies are licensed under the Apache License 2.0:
+
+- typescript@5.9.3 (https://github.com/microsoft/TypeScript)
+- ecdsa-sig-formatter@1.0.11
+- detect-libc@2.1.2
+- tunnel-agent@0.6.0
+- @humanwhocodes/config-array@0.13.0
+- @humanwhocodes/module-importer@1.0.1
+- doctrine@3.0.0
+- @webassemblyjs/leb128@1.13.2
+- baseline-browser-mapping@2.10.24
+
+Apache License 2.0 summary:
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+      http://www.apache.org/licenses/LICENSE-2.0
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+--------------------------------------------------------------------------------
+3. BSD-2-CLAUSE LICENSE
+--------------------------------------------------------------------------------
+
+The following dependencies are licensed under the BSD 2-Clause License:
+
+- @typescript-eslint/parser@7.18.0
+- @typescript-eslint/typescript-estree@7.18.0
+- domhandler@5.0.3
+- domelementtype@2.3.0
+- domutils@3.2.2
+- entities@4.5.0
+- nth-check@2.1.1
+- cheerio-select@2.1.0
+- css-select@5.2.2
+- glob-to-regexp@0.4.1
+- terser@5.46.2
+- eslint-scope@7.2.2
+- esrecurse@4.3.0
+- estraverse@5.3.0
+- esutils@2.0.3
+- espree@9.6.1
+- uri-js@4.4.1
+
+BSD 2-Clause License text:
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+  1. Redistributions of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+4. BSD-3-CLAUSE LICENSE
+--------------------------------------------------------------------------------
+
+The following dependencies are licensed under the BSD 3-Clause License:
+
+- buffer-equal-constant-time@1.0.1
+- qs@6.15.1
+- ieee754@1.2.1
+- source-map@0.7.6
+- esquery@1.7.0
+- flat@5.0.2
+- @humanwhocodes/object-schema@2.0.3
+- @xtuc/ieee754@1.2.0
+
+BSD 3-Clause License text:
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+  1. Redistributions of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+  3. Neither the name of the copyright holder nor the names of its contributors
+     may be used to endorse or promote products derived from this software
+     without specific prior written permission.
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+5. ISC LICENSE
+--------------------------------------------------------------------------------
+
+The following dependencies are licensed under the ISC License:
+
+- cliui@6.0.0, yargs-parser@18.1.3, get-caller-file@2.0.5
+- require-main-filename@2.0.0, set-blocking@2.0.0, which-module@2.0.1
+- y18n@4.0.3, fastq@1.20.1, glob-parent@6.0.2, minimatch@9.0.9
+- semver@7.7.4, glob@7.2.3, fs.realpath@1.0.0, inflight@1.0.6
+- once@1.4.0, wrappy@1.0.2, inherits@2.0.4, hosted-git-info@4.1.0
+- lru-cache@6.0.0, yallist@4.0.0, read@1.0.7, mute-stream@0.0.8
+- rimraf@3.0.2, graceful-fs@4.2.11, which@2.0.2, isexe@2.0.0
+- flatted@3.4.2, electron-to-chromium@1.5.345, picocolors@1.1.1
+- @ungap/structured-clone@1.3.0, chownr@1.1.4, ini@1.3.8
+- boolbase@1.0.0
+
+ISC License text:
+
+  Permission to use, copy, modify, and/or distribute this software for any
+  purpose with or without fee is hereby granted, provided that the above
+  copyright notice and this permission notice appear in all copies.
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+  WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+  SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
+  RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+  NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE
+  USE OR PERFORMANCE OF THIS SOFTWARE.
+
+--------------------------------------------------------------------------------
+6. 0BSD LICENSE
+--------------------------------------------------------------------------------
+
+- tslib@2.8.1
+
+0BSD License text:
+
+  Permission to use, copy, modify, and/or distribute this software for any
+  purpose with or without fee is hereby granted.
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+  REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+  FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+  INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+  OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+  TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+  THIS SOFTWARE.
+
+--------------------------------------------------------------------------------
+7. PYTHON-2.0 LICENSE
+--------------------------------------------------------------------------------
+
+- argparse@2.0.1
+
+Python-2.0 is a permissive license that permits use, modification, and
+distribution. It requires retaining license notices and does not impose
+copyleft restrictions. Full text: https://spdx.org/licenses/Python-2.0.html
+
+--------------------------------------------------------------------------------
+8. BLUEOAK-1.0.0 LICENSE
+--------------------------------------------------------------------------------
+
+- sax@1.6.0
+
+Blue Oak is a permissive license that grants broad permission to use, modify,
+and distribute. Full text: https://blueoakcouncil.org/license/1.0.0
+
+--------------------------------------------------------------------------------
+9. CC-BY-4.0 LICENSE
+--------------------------------------------------------------------------------
+
+- caniuse-lite@1.0.30001791
+
+Creative Commons Attribution 4.0 International License.
+Requires appropriate credit and indication of changes.
+Full text: https://creativecommons.org/licenses/by/4.0/
+
+--------------------------------------------------------------------------------
+10. PROPRIETARY LICENSE (SEE LICENSE IN PACKAGE)
+--------------------------------------------------------------------------------
+
+- @vscode/vsce-sign@2.0.9
+- @vscode/vsce-sign-darwin-arm64@2.0.6
+
+These packages are published by Microsoft under their own license terms.
+See the LICENSE.txt file within each package for details.
+
+--------------------------------------------------------------------------------
+
+NOTE: This notice file was generated on 2026-04-30 based on the dependency
+tree at the time of packaging. For the most up-to-date license information,
+please check each package's repository or npm page.

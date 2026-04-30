@@ -1,0 +1,15 @@
+.vscode/**
+.trae/**
+node_modules/**
+src/**
+tsconfig.json
+webpack.config.js
+.eslintrc.json
+.gitignore
+.vscodeignore
+**/*.ts
+!dist/**
+!media/**
+!package.json
+!README.md
+!LICENSE

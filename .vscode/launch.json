@@ -1,0 +1,36 @@
+{
+  /**
+   * @file .vscode/launch.json
+   * @description VSCode 扩展调试启动配置
+   *
+   * 主要功能：
+   * - 配置扩展开发时的调试启动参数
+   * - 支持 F5 启动一个新的扩展开发宿主窗口进行调试
+   *
+   * @author zls3434
+   * @date 2026-04-30
+   * @modification 2026-04-30 zls3434 创建调试启动配置
+   */
+
+  "version": "0.2.0",
+  "configurations": [
+    {
+      /** 调试配置名称 */
+      "name": "启动扩展",
+      /** 调试类型：VSCode 扩展开发 */
+      "type": "extensionHost",
+      /** 启动请求 */
+      "request": "launch",
+      /** 传递给扩展宿主进程的运行时参数 */
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}"
+      ],
+      /** 启动前执行的任务：先编译 TypeScript */
+      "preLaunchTask": "${defaultBuildTask}",
+      /** 输出目录 */
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*.js"
+      ]
+    }
+  ]
+}

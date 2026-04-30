@@ -1,0 +1,63 @@
+{
+  /**
+   * @file .vscode/tasks.json
+   * @description VSCode 扩展开发任务配置
+   *
+   * 主要功能：
+   * - 定义编译(npm: compile)和监听(npm: watch)两个构建任务
+   * - 默认构建任务为 TypeScript 编译
+   *
+   * @author zls3434
+   * @date 2026-04-30
+   * @modification 2026-04-30 zls3434 创建任务配置
+   */
+
+  "version": "2.0.0",
+  "tasks": [
+    {
+      /** 任务类型：执行 npm 脚本 */
+      "type": "npm",
+      /** npm 脚本名称：compile -> webpack */
+      "script": "compile",
+      /** 任务分组：构建任务，作为默认构建任务 */
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      /** 任务标签：在 VSCode 中显示的任务名称 */
+      "label": "npm: compile",
+      /** 展示输出窗口 */
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      },
+      /** 问题匹配器：捕获 TypeScript 编译错误 */
+      "problemMatcher": [
+        "$tsc"
+      ],
+      /** 详细输出 */
+      "detail": "webpack"
+    },
+    {
+      /** 任务类型：执行 npm 脚本 */
+      "type": "npm",
+      /** npm 脚本名称：watch -> webpack --watch */
+      "script": "watch",
+      /** 任务分组：构建任务 */
+      "group": "build",
+      /** 任务标签 */
+      "label": "npm: watch",
+      /** 展示输出窗口 */
+      "presentation": {
+        "reveal": "never",
+        "panel": "shared"
+      },
+      /** 问题匹配器 */
+      "problemMatcher": [
+        "$tsc"
+      ],
+      /** 详细输出 */
+      "detail": "webpack --watch"
+    }
+  ]
+}
