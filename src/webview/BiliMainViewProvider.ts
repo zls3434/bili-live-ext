@@ -49,6 +49,20 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
   /** 导航历史记录栈，用于返回上一页功能，记录离开列表进入播放前的视图 */
   private _navigationHistory: ContentView[] = [];
 
+  /** 标记是否为首次激活（用于决定是否重新加载数据） */
+  private _firstActivation: boolean = true;
+
+  /** 上次注册事件监听器的 Webview 实例（避免在同一 Webview 上重复注册） */
+  private _lastRegisteredWebview: vscode.Webview | undefined;
+
+  /**
+   * 标记 HTML 是否已注入到 Webview 中
+   * 用于判断 retainContextWhenHidden 是否生效：
+   * - 如果 _htmlInjected 为 true 且 webview.html 非空，说明 Webview 被保留，不需要重建
+   * - 如果 _htmlInjected 为 true 但 webview.html 为空，说明 Webview 被销毁重建了
+   */
+  private _htmlInjected: boolean = false;
+
   /** 登录状态信息 */
   private _loginStatus: LoginStatus = {
     loggedIn: false,
@@ -229,10 +243,14 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
                 qrCodeUrl: '',
                 qrCodeKey: '',
               };
-              // 通知 Webview 登录成功
+              // 通知 Webview 登录成功（更新 UI 状态）
               this._postMessage({
                 type: 'updateLoginStatus',
                 loggedIn: true,
+              });
+              // 通知 Webview 登录成功（导航到推荐视频）
+              this._postMessage({
+                type: 'loginSuccess',
               });
               vscode.window.showInformationMessage('B站登录成功！');
             }
@@ -435,13 +453,15 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
   /**
    * Webview 视图创建和初始化
    *
-   * 当侧边栏面板首次展开时，VSCode 调用此方法创建 Webview。
-   * 在此方法中完成全部初始化工作：
-   * - Webview 选项配置（脚本启用、资源访问范围）
-   * - HTML 内容注入
-   * - 消息监听器注册（处理来自 Webview 的用户操作）
-   * - 可见性变化监听（面板重新可见时刷新数据）
-   * - 加载默认视图（推荐视频）的数据
+   * 当侧边栏面板展开时，VSCode/Trae 调用此方法。
+   *
+   * 关键设计：
+   * - 通过检查 webview.html 是否为空，判断 Webview 是否被保留（retainContextWhenHidden 生效）
+   * - 如果 Webview 被保留（html 非空），不重新设置 options 和 HTML（避免 Webview 重置）
+   * - 如果 Webview 被重建（html 为空），设置 options 和注入 HTML
+   * - 前端通过 vscodeApi.getState/setState 在 Webview 被重建时恢复 UI 状态
+   * - 后端只在首次加载数据，后续依靠前端缓存和状态恢复
+   * - 事件监听器按 Webview 实例跟踪，同一实例不重复注册避免泄漏
    *
    * @param {vscode.WebviewView} webviewView - VSCode 创建的 Webview 视图对象
    * @param {vscode.WebviewViewResolveContext} _context - 解析上下文（未使用）
@@ -453,106 +473,102 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ): void {
+    // 更新 Webview 引用
     this._view = webviewView;
 
-    // 配置 Webview 选项
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [
-        this.extensionUri,
-        vscode.Uri.joinPath(this.extensionUri, 'media'),
-      ],
-    };
+    // 判断 Webview 是否需要初始化 HTML
+    // 策略：如果之前已注入过 HTML 且 webview.html 仍然非空，说明 retainContextWhenHidden 生效，
+    // Webview 被保留在了内存中，不需要重建；否则需要注入
+    const needsInit = !this._htmlInjected || !webviewView.webview.html;
 
-    // 注入 HTML 内容
-    webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+    if (needsInit) {
+      // Webview 是新建的或被重建了：必须设置 options 和注入 HTML
+      webviewView.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [
+          this.extensionUri,
+          vscode.Uri.joinPath(this.extensionUri, 'media'),
+        ],
+      };
+      webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+      this._htmlInjected = true;
+    }
+    // 如果 Webview 不是新建的（retainContextWhenHidden 生效），不重新设置 options 和 HTML
+    // 重新设置会导致 Webview 完全重置，丢失所有 DOM 和 JS 状态
 
-    // 注册消息监听器：处理来自 Webview 的用户操作
-    webviewView.webview.onDidReceiveMessage(
-      async (message: Record<string, unknown>) => {
-        switch (message.type) {
-          // Webview -> Extension: 用户点击了 Tab 切换按钮
-          case 'switchView': {
-            const view = message.view as ContentView;
-            this._currentView = view;
-            // 切换视图时重置分页状态
-            this._resetPageState(view);
-            this._postMessage({
-              type: 'navigateTo',
-              view,
-            });
-            await this._loadViewData(view);
-            break;
+    // 只在 Webview 实例变化时注册事件监听器（同一个 Webview 不重复注册，避免泄漏）
+    if (this._lastRegisteredWebview !== webviewView.webview) {
+      this._lastRegisteredWebview = webviewView.webview;
+
+      // 消息监听器：接收来自 Webview 前端的用户操作
+      webviewView.webview.onDidReceiveMessage(
+        async (message: Record<string, unknown>) => {
+          switch (message.type) {
+            case 'switchView': {
+              const view = message.view as ContentView;
+              this._currentView = view;
+              this._postMessage({ type: 'navigateTo', view });
+              if (!this._hasDataForView(view)) {
+                await this._loadViewData(view);
+              }
+              break;
+            }
+            case 'clickVideo': {
+              const bvid = message.bvid as string;
+              await this.openVideo(bvid);
+              break;
+            }
+            case 'clickLive': {
+              const roomId = message.roomId as number;
+              await this.openLive(roomId);
+              break;
+            }
+            case 'goBack': {
+              await this.goBack();
+              break;
+            }
+            case 'login': {
+              vscode.commands.executeCommand('bilibili.login');
+              break;
+            }
+            case 'logout': {
+              await this.sessionManager.clearSession();
+              this._loginStatus = { loggedIn: false, cookie: '', qrCodeUrl: '', qrCodeKey: '' };
+              this._postMessage({ type: 'updateLoginStatus', loggedIn: false });
+              vscode.window.showInformationMessage('已退出B站登录');
+              break;
+            }
+            case 'loadMore': {
+              const loadView = message.view as ContentView;
+              await this._loadMoreData(loadView);
+              break;
+            }
+            case 'refresh': {
+              const refreshView = message.view as ContentView;
+              this._viewHasData[Object.keys(ContentView).find(k => ContentView[k as keyof typeof ContentView] === refreshView) || ''] = false;
+              this._resetPageState(refreshView);
+              await this._loadViewData(refreshView);
+              break;
+            }
+            default:
+              console.warn('未知的 Webview 消息类型:', message.type);
           }
-
-          // Webview -> Extension: 用户点击了某个视频
-          case 'clickVideo': {
-            const bvid = message.bvid as string;
-            await this.openVideo(bvid);
-            break;
-          }
-
-          // Webview -> Extension: 用户点击了某个直播间
-          case 'clickLive': {
-            const roomId = message.roomId as number;
-            await this.openLive(roomId);
-            break;
-          }
-
-          // Webview -> Extension: 用户点击了返回按钮
-          case 'goBack': {
-            await this.goBack();
-            break;
-          }
-
-          // Webview -> Extension: 用户点击了登录按钮
-          case 'login': {
-            vscode.commands.executeCommand('bilibili.login');
-            break;
-          }
-
-          // Webview -> Extension: 用户点击了退出登录按钮
-          case 'logout': {
-            await this.sessionManager.clearSession();
-            this._loginStatus = {
-              loggedIn: false,
-              cookie: '',
-              qrCodeUrl: '',
-              qrCodeKey: '',
-            };
-            this._postMessage({
-              type: 'updateLoginStatus',
-              loggedIn: false,
-            });
-            vscode.window.showInformationMessage('已退出B站登录');
-            break;
-          }
-
-          // Webview -> Extension: 用户滚动到底部，请求加载更多
-          case 'loadMore': {
-            const loadView = message.view as ContentView;
-            await this._loadMoreData(loadView);
-            break;
-          }
-
-          default:
-            console.warn('未知的 Webview 消息类型:', message.type);
         }
-      }
-    );
+      );
 
-    // 视图可见性变化监听：面板重新可见时刷新数据
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) {
-        this._postMessage({
-          type: 'updateLoginStatus',
-          loggedIn: this._loginStatus.loggedIn,
-        });
-      }
-    });
+      // 视图可见性变化监听：面板重新可见时同步登录状态
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) {
+          this._postMessage({ type: 'updateLoginStatus', loggedIn: this._loginStatus.loggedIn });
+        }
+      });
+    }
 
-    // 加载默认视图（推荐视频）的数据
-    this._loadViewData(this._currentView);
+    // 只在首次激活时加载数据，后续依赖前端状态恢复
+    if (this._firstActivation) {
+      this._loadViewData(this._currentView);
+    }
+    this._firstActivation = false;
   }
 
   // ==================== 数据加载 ====================
@@ -588,6 +604,35 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     } catch (error) {
       console.error(`加载视图数据失败 (${view}):`, error);
     }
+  }
+
+  // ==================== 数据缓存 ====================
+
+  /** 缓存每个视图是否已有数据（避免切换 Tab 时重复加载） */
+  private _viewHasData: Record<string, boolean> = {
+    follows: false,
+    favorites: false,
+    recommendedVideos: false,
+    recommendedLives: false,
+  };
+
+  /**
+   * 检查指定视图是否已有数据
+   *
+   * @param {ContentView} view - 视图类型
+   * @returns {boolean} 是否已有数据
+   */
+  private _hasDataForView(view: ContentView): boolean {
+    const key = Object.keys(ContentView).find(k => ContentView[k as keyof typeof ContentView] === view);
+    return key ? (this._viewHasData[key] ?? false) : false;
+  }
+
+  /**
+   * 标记指定视图已有数据
+   */
+  private _markViewHasData(view: ContentView): void {
+    const key = Object.keys(ContentView).find(k => ContentView[k as keyof typeof ContentView] === view);
+    if (key) { this._viewHasData[key] = true; }
   }
 
   // ==================== 分页与懒加载 ====================
@@ -747,6 +792,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       }));
 
       state.hasMore = result.hasMore;
+      this._markViewHasData(ContentView.follows);
       this._postMessage({
         type: state.page === 1 ? 'updateListData' : 'appendListData',
         view: ContentView.follows,
@@ -807,6 +853,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     try {
       const result = await this.apiService.getRecommendedVideos(state.page);
       state.hasMore = result.hasMore;
+      this._markViewHasData(ContentView.recommendedVideos);
       this._postMessage({
         type: state.page === 1 ? 'updateListData' : 'appendListData',
         view: ContentView.recommendedVideos,
@@ -833,6 +880,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     try {
       const result = await this.apiService.getRecommendedLives(state.page);
       state.hasMore = result.hasMore;
+      this._markViewHasData(ContentView.recommendedLives);
       this._postMessage({
         type: state.page === 1 ? 'updateListData' : 'appendListData',
         view: ContentView.recommendedLives,
@@ -904,6 +952,21 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           align-items: center;
         }
         .tab-spacer { flex: 1; }
+        .refresh-btn {
+          background: none;
+          border: none;
+          color: var(--vscode-sideBar-foreground);
+          cursor: pointer;
+          padding: 2px 6px;
+          font-size: 13px;
+          border-radius: 4px;
+          line-height: 1;
+          opacity: 0.7;
+          flex-shrink: 0;
+          transition: transform 0.3s ease, opacity 0.15s;
+        }
+        .refresh-btn:hover { opacity: 1; background-color: var(--vscode-toolbar-hoverBackground); }
+        .refresh-btn.spinning { transform: rotate(360deg); }
         .settings-btn {
           background: none;
           border: none;
@@ -1195,6 +1258,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           <button class="tab-btn" data-view="follows">我的关注</button>
           <button class="tab-btn" data-view="favorites">我的收藏</button>
           <span class="tab-spacer"></span>
+          <button class="refresh-btn" id="btn-refresh" title="刷新">↻</button>
           <button class="settings-btn" id="btn-settings" title="设置">⚙</button>
         </div>
 
@@ -1224,20 +1288,25 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         /** 获取 VSCode Webview API 实例，用于与扩展主进程通信 */
         const vscodeApi = acquireVsCodeApi();
 
-        /** 当前激活的视图类型 */
-        let currentView = 'recommendedVideos';
-
-        /** 是否处于播放器模式 */
-        let isPlayerMode = false;
-
-        /** 播放器模式下的媒体类型（video/live） */
-        let playerMediaType = '';
-
-        /** 保存进入播放器前的列表 HTML，退出时恢复 */
-        let savedListHtml = '';
-
-        /** 是否还有更多数据可加载（用于懒加载判断） */
+        // 尝试从持久化状态恢复（Webview 被重建时，前端需要从 getState 恢复 UI）
+        const savedState = vscodeApi.getState() || {};
+        let currentView = savedState.currentView || 'recommendedVideos';
+        let isPlayerMode = savedState.isPlayerMode || false;
+        let playerMediaType = savedState.playerMediaType || '';
+        const viewCache = savedState.viewCache || {};
+        let savedListHtml = savedState.savedListHtml || '';
         let hasMoreData = true;
+
+        /** 保存关键状态到 VSCode 持久化存储 */
+        function saveState() {
+          vscodeApi.setState({
+            currentView,
+            isPlayerMode,
+            playerMediaType,
+            viewCache,
+            savedListHtml,
+          });
+        }
 
         /** 是否正在加载更多数据（防止重复请求） */
         let isLoadingMore = false;
@@ -1250,6 +1319,41 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         const settingsMenu = document.getElementById('settings-menu');
         const menuLogin = document.getElementById('menu-login');
         const menuLogout = document.getElementById('menu-logout');
+        const btnRefresh = document.getElementById('btn-refresh');
+
+        // ==================== 恢复持久化状态（Webview 被重建时需要从缓存恢复 UI） ====================
+
+        // 如果有持久化状态，恢复 UI 而非从头开始
+        if (savedState.currentView && Object.keys(savedState).length > 0) {
+          currentView = savedState.currentView;
+          isPlayerMode = savedState.isPlayerMode || false;
+          playerMediaType = savedState.playerMediaType || '';
+
+          // 高亮正确的 Tab
+          highlightTab(currentView);
+
+          if (isPlayerMode) {
+            // 之前处于播放器模式：由于视频源 URL 无法持久化，无法恢复播放器
+            // 回退到列表模式，从缓存中恢复进入播放器前的列表内容
+            isPlayerMode = false;
+            tabBar.style.display = 'flex';
+            if (savedState.savedListHtml) {
+              // 恢复进入播放器前的列表内容
+              contentEl.innerHTML = savedState.savedListHtml;
+              viewCache[currentView] = savedState.savedListHtml;
+            } else if (viewCache[currentView]) {
+              contentEl.innerHTML = viewCache[currentView];
+            }
+          } else {
+            // 处于列表模式：从缓存恢复列表内容
+            tabBar.style.display = 'flex';
+            if (viewCache[currentView]) {
+              contentEl.innerHTML = viewCache[currentView];
+            }
+          }
+          // 保存恢复后的状态
+          saveState();
+        }
 
         // ==================== 设置菜单事件 ====================
 
@@ -1267,6 +1371,15 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         /** 阻止菜单内点击冒泡（防止菜单在点击时关闭） */
         settingsMenu.addEventListener('click', (e) => {
           e.stopPropagation();
+        });
+
+        // ==================== 刷新按钮事件 ====================
+
+        /** 刷新当前列表 */
+        btnRefresh.addEventListener('click', () => {
+          btnRefresh.classList.add('spinning');
+          setTimeout(() => { btnRefresh.classList.remove('spinning'); }, 300);
+          vscodeApi.postMessage({ type: 'refresh', view: currentView });
         });
 
         // ==================== 滚动到底部检测（懒加载） ====================
@@ -1307,13 +1420,20 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           if (target.classList.contains('tab-btn')) {
             const view = target.dataset.view;
             if (view && view !== currentView && !isPlayerMode) {
+              // 保存当前视图内容到缓存
+              viewCache[currentView] = contentEl.innerHTML;
+
               // 更新 Tab 激活状态
               tabBar.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
               target.classList.add('active');
               currentView = view;
 
-              // 显示加载动画
-              showLoading();
+              // 如果目标视图有缓存则直接恢复，否则显示加载中
+              if (viewCache[view]) {
+                contentEl.innerHTML = viewCache[view];
+              } else {
+                showLoading();
+              }
 
               // 通知扩展主进程切换视图
               vscodeApi.postMessage({ type: 'switchView', view });
@@ -1327,16 +1447,21 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           const msg = event.data;
           switch (msg.type) {
 
-            // 切换到指定视图的列表
+            // 切换到指定视图的列表（由后端或恢复状态时触发）
             case 'navigateTo':
             case 'showList':
               exitPlayerMode();
               highlightTab(msg.view);
               currentView = msg.view;
+              saveState();
 
-              // 如果消息携带了列表数据，直接渲染
+              // 如果消息携带了列表数据，直接渲染并更新缓存
               if (msg.view && msg.data) {
                 renderListByView(msg.view, msg.data);
+                viewCache[msg.view] = contentEl.innerHTML;
+              } else if (msg.view && viewCache[msg.view]) {
+                // 没有新数据但缓存中有内容，恢复缓存
+                contentEl.innerHTML = viewCache[msg.view];
               }
               break;
 
@@ -1344,8 +1469,9 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
             case 'updateListData':
               if (msg.view === currentView && !isPlayerMode) {
                 renderListByView(msg.view, msg.data, msg.error);
-                // 保存 hasMore 状态用于懒加载判断
                 hasMoreData = msg.hasMore !== false;
+                viewCache[msg.view] = contentEl.innerHTML;
+                saveState();
               }
               break;
 
@@ -1355,6 +1481,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
                 appendListData(msg.view, msg.data);
                 hasMoreData = msg.hasMore !== false;
                 isLoadingMore = false;
+                viewCache[msg.view] = contentEl.innerHTML;
+                saveState();
               }
               break;
 
@@ -1368,9 +1496,17 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               renderLoginView(msg.qrCodeDataUrl);
               break;
 
-            // 更新登录状态
+            // 更新登录状态（仅更新按钮可见性，不切换视图）
             case 'updateLoginStatus':
               updateLoginUI(msg);
+              break;
+
+            // 登录成功：导航到推荐视频并重新加载数据
+            case 'loginSuccess':
+              currentView = 'recommendedVideos';
+              highlightTab('recommendedVideos');
+              vscodeApi.postMessage({ type: 'switchView', view: 'recommendedVideos' });
+              saveState();
               break;
           }
         });
@@ -1537,6 +1673,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           savedListHtml = contentEl.innerHTML;
           isPlayerMode = true;
           playerMediaType = data.mediaType;
+          saveState();
 
           // 切换 UI：隐藏 Tab 栏（含设置按钮）
           tabBar.style.display = 'none';
@@ -1586,6 +1723,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
          */
         function exitPlayerMode() {
           isPlayerMode = false;
+          saveState();
           tabBar.style.display = 'flex';
 
           // 清理播放器
@@ -1676,14 +1814,21 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           });
         }
 
+        /**
+         * 更新登录状态 UI
+         *
+         * 仅更新登录/退出按钮的可见性，不切换视图。
+         * 首次登录成功后跳转到推荐视频由 loginSuccess 消息单独处理。
+         *
+         * @param {Object} msg - 消息对象
+         * @param {boolean} msg.loggedIn - 是否已登录
+         * @param {boolean} [msg.scanned] - 是否已扫码
+         * @param {boolean} [msg.expired] - 二维码是否过期
+         */
         function updateLoginUI(msg) {
           if (msg.loggedIn === true) {
             menuLogin.classList.add('hidden');
             menuLogout.classList.remove('hidden');
-            currentView = 'recommendedVideos';
-            highlightTab('recommendedVideos');
-            showLoading();
-            vscodeApi.postMessage({ type: 'switchView', view: 'recommendedVideos' });
           } else if (msg.loggedIn === false) {
             menuLogin.classList.remove('hidden');
             menuLogout.classList.add('hidden');
