@@ -96,10 +96,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    *
    * @param {vscode.Uri} extensionUri - 扩展的根目录 URI，用于加载 Webview 静态资源
    * @param {vscode.ExtensionContext} context - VSCode 扩展上下文，提供生命周期管理和存储
+   * @param {string} proxyBaseUrl - 本地代理服务器 URL，用于绕过 B站 CDN 403 防盗链
    */
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly context: vscode.ExtensionContext
+    private readonly context: vscode.ExtensionContext,
+    private readonly proxyBaseUrl: string
   ) {
     this.sessionManager = new SessionManager(context);
     this.loginService = new BiliLoginService();
@@ -326,11 +328,14 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       // 保存导航历史
       this._navigationHistory.push(this._currentView);
 
+      // 通过本地代理服务器转发视频 URL，绕过 B站 CDN 403 防盗链
+      const proxiedUrl = `${this.proxyBaseUrl}/video?url=${encodeURIComponent(mediaInfo.url)}`;
+
       // 通知 Webview 切换到播放器
       this._postMessage({
         type: 'showPlayer',
         mediaType: 'video',
-        url: mediaInfo.url,
+        url: proxiedUrl,
         format: mediaInfo.format,
         title,
         author: ownerName,
@@ -375,11 +380,14 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       // 保存导航历史
       this._navigationHistory.push(this._currentView);
 
+      // 通过本地代理服务器转发直播流 URL，绕过 B站 CDN 403 防盗链
+      const proxiedUrl = `${this.proxyBaseUrl}/live?url=${encodeURIComponent(mediaInfo.url)}`;
+
       // 通知 Webview 切换到直播播放器
       this._postMessage({
         type: 'showPlayer',
         mediaType: 'live',
-        url: mediaInfo.url,
+        url: proxiedUrl,
         format: mediaInfo.format,
         title,
         author: owner,
@@ -414,14 +422,11 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       // 断开直播弹幕连接并清空输出通道
       this._disconnectDanmaku();
 
-      // 通知 Webview 切回列表视图
+      // 通知 Webview 切回列表视图（不重新加载数据，前端已有缓存内容）
       this._postMessage({
         type: 'showList',
         view: previousView,
       });
-
-      // 加载对应视图的数据
-      await this._loadViewData(previousView);
     }
   }
 
@@ -736,7 +741,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       const followItems = result.list.map((follow) => ({
         mid: follow.mid,
         uname: follow.uname,
-        face: follow.face,
+        face: follow.face ? follow.face.replace(/^\/\//, 'https://').replace(/^http:\/\//, 'https://') : '',
         liveRoom: null,
         videos: [],
       }));
@@ -868,7 +873,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:; media-src https: blob:; connect-src https: wss:;">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:; media-src https: http://127.0.0.1:* blob:; connect-src https: wss: http://127.0.0.1:*;">
       <title>bilibili 浏览</title>
       <style>
         /* ========== 全局重置与基础样式 ========== */
@@ -886,44 +891,104 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           display: flex;
           flex-direction: column;
           height: 100vh;
+          position: relative;
         }
 
-        /* ========== 顶部导航栏 ========== */
-        .navbar {
+        /* ========== Tab 切换按钮组 ========== */
+        .tab-bar {
           display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 6px 8px;
-          border-bottom: 1px solid var(--vscode-sideBar-border);
+          padding: 4px 8px;
+          gap: 4px;
           flex-shrink: 0;
-        }
-        .navbar-left {
-          display: flex;
+          border-bottom: 1px solid var(--vscode-sideBar-border);
           align-items: center;
-          gap: 6px;
         }
-        .navbar-title {
-          font-weight: 700;
-          font-size: 13px;
-          color: #FB7299;
-        }
-        .navbar-right {
-          display: flex;
-          gap: 2px;
-        }
-        .nav-btn {
+        .tab-spacer { flex: 1; }
+        .settings-btn {
           background: none;
           border: none;
-          color: var(--vscode-foreground);
+          color: var(--vscode-sideBar-foreground);
           cursor: pointer;
-          padding: 3px 7px;
-          font-size: 11px;
+          padding: 2px 6px;
+          font-size: 14px;
           border-radius: 4px;
-          transition: background-color 0.15s;
+          line-height: 1;
+          opacity: 0.7;
+          flex-shrink: 0;
         }
-        .nav-btn:hover { opacity: 1; background-color: var(--vscode-toolbar-hoverBackground); }
-        .nav-btn.hidden { display: none; }
-        .nav-btn.btn-back { color: #FB7299; }
+        .settings-btn:hover { opacity: 1; background-color: var(--vscode-toolbar-hoverBackground); }
+
+        /* ========== 设置菜单（下拉） ========== */
+        .settings-menu {
+          position: absolute;
+          right: 8px;
+          top: 28px;
+          background: var(--vscode-editor-background);
+          border: 1px solid var(--vscode-sideBar-border);
+          border-radius: 4px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+          z-index: 100;
+          display: none;
+          min-width: 120px;
+        }
+        .settings-menu.show { display: block; }
+        .settings-menu-item {
+          display: block;
+          width: 100%;
+          background: none;
+          border: none;
+          color: var(--vscode-sideBar-foreground);
+          cursor: pointer;
+          padding: 6px 12px;
+          font-size: 12px;
+          text-align: left;
+        }
+        .settings-menu-item:hover { background-color: var(--vscode-toolbar-hoverBackground); }
+        .hidden { display: none !important; }
+
+        /* ========== 播放器覆盖层（自动隐藏） ========== */
+        .player-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          display: flex;
+          align-items: center;
+          padding: 8px;
+          background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+          opacity: 0;
+          transition: opacity 0.3s ease;
+          z-index: 10;
+        }
+        .player-overlay:hover { opacity: 1; }
+        .player-back-btn {
+          background: none;
+          border: none;
+          color: #fff;
+          cursor: pointer;
+          font-size: 18px;
+          padding: 4px 8px;
+          border-radius: 4px;
+          line-height: 1;
+        }
+        .player-back-btn:hover { background-color: rgba(255,255,255,0.2); }
+        .player-overlay-info {
+          flex: 1;
+          min-width: 0;
+          margin-left: 8px;
+        }
+        .player-overlay-info .title {
+          font-size: 12px;
+          font-weight: 500;
+          color: #fff;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .player-overlay-info .author {
+          font-size: 10px;
+          color: rgba(255,255,255,0.7);
+        }
 
         /* ========== Tab 切换按钮组 ========== */
         .tab-bar {
@@ -1032,85 +1097,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         }
 
         /* ========== 播放器视图 ========== */
-        .player-container {
-          display: flex;
-          flex-direction: column;
-          height: 100%;
-        }
-        .player-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 8px;
-          flex-shrink: 0;
-        }
-        .player-header .btn-back {
-          color: #FB7299;
-          cursor: pointer;
-          font-size: 14px;
-          font-weight: 700;
-          border: none;
-          background: none;
-        }
-        .player-info {
-          flex: 1;
-          min-width: 0;
-        }
-        .player-info .title {
-          font-size: 12px;
-          font-weight: 500;
-          color: var(--vscode-foreground);
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .player-info .author {
-          font-size: 10px;
-          color: var(--vscode-descriptionForeground);
-        }
-        .player-video-area { flex: 1; position: relative; background: #000; display: flex; align-items: center; justify-content: center; }
+        .player-video-area { flex: 1; position: relative; background: #000; }
         .player-video-area video {
           width: 100%;
           height: 100%;
           object-fit: contain;
         }
-        .player-controls {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 8px;
-          flex-shrink: 0;
-          background-color: var(--vscode-sideBar-background);
-          border-top: 1px solid var(--vscode-sideBar-border);
-        }
-        .ctrl-btn {
-          background: none;
-          border: none;
-          color: var(--vscode-foreground);
-          cursor: pointer;
-          font-size: 14px;
-          padding: 2px 4px;
-          border-radius: 3px;
-        }
-        .ctrl-btn:hover { background-color: var(--vscode-toolbar-hoverBackground); }
-        .progress-bar {
-          flex: 1;
-          height: 4px;
-          border-radius: 2px;
-          background-color: var(--vscode-progressBar-background);
-          cursor: pointer;
-          position: relative;
-        }
-        .progress-bar .progress-fill {
-          height: 100%;
-          border-radius: 2px;
-          background-color: #FB7299;
-          width: 0%;
-          transition: width 0.1s linear;
-        }
-        .volume-slider { width: 60px; }
-        .time-display { font-size: 10px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
-
         /* ========== 登录区 ========== */
         .login-area {
           display: flex;
@@ -1196,24 +1188,20 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     </head>
     <body>
       <div class="container">
-        <!-- 顶部导航栏 -->
-        <div class="navbar">
-          <div class="navbar-left">
-            <span class="navbar-title">🔴 哔哩哔哩</span>
-          </div>
-          <div class="navbar-right">
-            <button class="nav-btn btn-back hidden" id="btn-back" title="返回列表">← 返回</button>
-            <button class="nav-btn" id="btn-login" title="登录">登录</button>
-            <button class="nav-btn hidden" id="btn-logout" title="退出登录">退出</button>
-          </div>
-        </div>
-
-        <!-- Tab 切换按钮组 -->
+        <!-- Tab 切换按钮组 + 设置按钮 -->
         <div class="tab-bar" id="tab-bar">
           <button class="tab-btn active" data-view="recommendedVideos">推荐视频</button>
           <button class="tab-btn" data-view="recommendedLives">推荐直播</button>
           <button class="tab-btn" data-view="follows">我的关注</button>
           <button class="tab-btn" data-view="favorites">我的收藏</button>
+          <span class="tab-spacer"></span>
+          <button class="settings-btn" id="btn-settings" title="设置">⚙</button>
+        </div>
+
+        <!-- 设置菜单（下拉） -->
+        <div class="settings-menu" id="settings-menu">
+          <button class="settings-menu-item" id="menu-login">登录</button>
+          <button class="settings-menu-item hidden" id="menu-logout">退出登录</button>
         </div>
 
         <!-- 主内容区 -->
@@ -1245,6 +1233,9 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         /** 播放器模式下的媒体类型（video/live） */
         let playerMediaType = '';
 
+        /** 保存进入播放器前的列表 HTML，退出时恢复 */
+        let savedListHtml = '';
+
         /** 是否还有更多数据可加载（用于懒加载判断） */
         let hasMoreData = true;
 
@@ -1255,9 +1246,28 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
         const contentEl = document.getElementById('content');
         const tabBar = document.getElementById('tab-bar');
-        const btnBack = document.getElementById('btn-back');
-        const btnLogin = document.getElementById('btn-login');
-        const btnLogout = document.getElementById('btn-logout');
+        const btnSettings = document.getElementById('btn-settings');
+        const settingsMenu = document.getElementById('settings-menu');
+        const menuLogin = document.getElementById('menu-login');
+        const menuLogout = document.getElementById('menu-logout');
+
+        // ==================== 设置菜单事件 ====================
+
+        /** 设置按钮：切换菜单显示 */
+        btnSettings.addEventListener('click', (e) => {
+          e.stopPropagation();
+          settingsMenu.classList.toggle('show');
+        });
+
+        /** 点击其他区域关闭菜单 */
+        document.addEventListener('click', () => {
+          settingsMenu.classList.remove('show');
+        });
+
+        /** 阻止菜单内点击冒泡（防止菜单在点击时关闭） */
+        settingsMenu.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
 
         // ==================== 滚动到底部检测（懒加载） ====================
 
@@ -1276,21 +1286,18 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           }
         });
 
-        // ==================== 导航栏按钮事件 ====================
+        // ==================== 设置菜单内按钮事件 ====================
 
-        /** 返回按钮：从播放器回到列表 */
-        btnBack.addEventListener('click', () => {
-          vscodeApi.postMessage({ type: 'goBack' });
-        });
-
-        /** 登录按钮 */
-        btnLogin.addEventListener('click', () => {
+        /** 登录按钮（设置菜单内） */
+        menuLogin.addEventListener('click', () => {
           vscodeApi.postMessage({ type: 'login' });
+          settingsMenu.classList.remove('show');
         });
 
-        /** 退出登录按钮 */
-        btnLogout.addEventListener('click', () => {
+        /** 退出登录按钮（设置菜单内） */
+        menuLogout.addEventListener('click', () => {
           vscodeApi.postMessage({ type: 'logout' });
+          settingsMenu.classList.remove('show');
         });
 
         // ==================== Tab 切换事件 ====================
@@ -1480,7 +1487,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           let html = '';
           followItems.forEach(f => {
             html += '<div class="follow-card">';
-            html += '<img class="follow-avatar" src="' + escapeHtml(f.face) + '" alt="" loading="lazy" onerror="this.style.display=none" />';
+            html += '<img class="follow-avatar" src="' + ensureHttps(escapeHtml(f.face)) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display=none" />';
             html += '<div class="follow-info"><span class="follow-name">' + escapeHtml(f.uname) + '</span></div>';
             if (f.liveRoom) {
               html += '<span class="card-badge-live" style="cursor:pointer" data-room-id="' + f.liveRoom.roomId + '" onclick="event.stopPropagation();clickLive(this)">● LIVE</span>';
@@ -1499,7 +1506,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           let html = '<div class="card-list">';
           folders.forEach(f => {
             html += '<div class="fav-card" data-media-id="' + f.id + '" onclick="clickFavorite(this)">';
-            html += '<img class="fav-cover" src="' + escapeHtml(f.cover) + '" alt="" loading="lazy" onerror="this.src=\\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22><rect fill=%22%23eee%22 width=%2248%22 height=%2248%22/></svg>\\'" />';
+            html += '<img class="fav-cover" src="' + ensureHttps(escapeHtml(f.cover)) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.src=\\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22><rect fill=%22%23eee%22 width=%2248%22 height=%2248%22/></svg>\\'" />';
             html += '<div class="fav-info">';
             html += '<div class="fav-title">' + escapeHtml(f.title) + '</div>';
             html += '<div class="fav-count">' + (f.media_count || 0) + ' 个视频</div>';
@@ -1526,36 +1533,30 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
          * 进入播放器模式
          */
         function enterPlayerMode(data) {
+          // 保存当前列表内容，退出播放器时恢复
+          savedListHtml = contentEl.innerHTML;
           isPlayerMode = true;
           playerMediaType = data.mediaType;
 
-          // 切换 UI：隐藏 Tab 栏，显示返回按钮
+          // 切换 UI：隐藏 Tab 栏（含设置按钮）
           tabBar.style.display = 'none';
-          btnBack.classList.remove('hidden');
 
-          let html = '<div class="player-container">';
-          html += '<div class="player-header">';
-          html += '<button class="nav-btn btn-back" id="player-btn-back">← 返回</button>';
-          html += '<div class="player-info">';
+          let html = '<div class="player-container" style="position:relative;">';
+          html += '<div class="player-overlay" id="player-overlay">';
+          html += '<button class="player-back-btn" id="player-btn-back" title="返回">◂</button>';
+          html += '<div class="player-overlay-info">';
           html += '<div class="title">' + escapeHtml(data.title || '正在播放') + '</div>';
           html += '<div class="author">' + escapeHtml(data.author || '') + '</div>';
           html += '</div></div>';
 
           html += '<div class="player-video-area">';
           if (data.mediaType === 'video') {
-            html += '<video id="video-player" autoplay controls style="width:100%;height:100%;object-fit:contain;"></video>';
+            html += '<video id="video-player" autoplay controls crossorigin="anonymous" style="width:100%;height:100%;object-fit:contain;"></video>';
           } else if (data.mediaType === 'live') {
-            html += '<video id="video-player" autoplay style="width:100%;height:100%;object-fit:contain;"></video>';
+            html += '<video id="video-player" autoplay crossorigin="anonymous" style="width:100%;height:100%;object-fit:contain;"></video>';
           }
           html += '</div>';
 
-          // 播放器控制栏
-          html += '<div class="player-controls">';
-          html += '<button class="ctrl-btn" id="ctrl-play">▶</button>';
-          html += '<div class="progress-bar" id="ctrl-progress"><div class="progress-fill" id="ctrl-progress-fill"></div></div>';
-          html += '<span class="time-display" id="ctrl-time">00:00 / 00:00</span>';
-          html += '<span class="ctrl-btn" id="ctrl-volume-btn">🔊</span>';
-          html += '<input type="range" class="volume-slider" id="ctrl-volume" min="0" max="100" value="80" />';
           html += '</div>';
           html += '</div>';
 
@@ -1578,54 +1579,6 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           if (!videoEl) { return; }
 
           videoEl.src = data.url;
-
-          // 播放/暂停按钮
-          const btnPlay = document.getElementById('ctrl-play');
-          btnPlay.addEventListener('click', () => {
-            if (videoEl.paused) { videoEl.play(); btnPlay.textContent = '⏸'; }
-            else { videoEl.pause(); btnPlay.textContent = '▶'; }
-          });
-
-          videoEl.addEventListener('play', () => { btnPlay.textContent = '⏸'; });
-          videoEl.addEventListener('pause', () => { btnPlay.textContent = '▶'; });
-
-          // 进度条更新
-          const progressFill = document.getElementById('ctrl-progress-fill');
-          const progressBar = document.getElementById('ctrl-progress');
-          const timeDisplay = document.getElementById('ctrl-time');
-
-          videoEl.addEventListener('timeupdate', () => {
-            if (videoEl.duration && isFinite(videoEl.duration)) {
-              const pct = (videoEl.currentTime / videoEl.duration) * 100;
-              progressFill.style.width = pct + '%';
-              timeDisplay.textContent = formatTime(videoEl.currentTime) + ' / ' + formatTime(videoEl.duration);
-            } else {
-              // 直播流无时长，显示 LIVE
-              timeDisplay.textContent = '● LIVE';
-            }
-          });
-
-          // 进度条点击跳转
-          progressBar.addEventListener('click', (e) => {
-            if (videoEl.duration && isFinite(videoEl.duration)) {
-              const rect = progressBar.getBoundingClientRect();
-              const pct = (e.clientX - rect.left) / rect.width;
-              videoEl.currentTime = pct * videoEl.duration;
-            }
-          });
-
-          // 音量控制
-          const volumeSlider = document.getElementById('ctrl-volume');
-          const volumeBtn = document.getElementById('ctrl-volume-btn');
-          volumeSlider.addEventListener('input', () => {
-            videoEl.volume = volumeSlider.value / 100;
-            volumeBtn.textContent = videoEl.volume === 0 ? '🔇' : '🔊';
-          });
-
-          volumeBtn.addEventListener('click', () => {
-            videoEl.muted = !videoEl.muted;
-            volumeBtn.textContent = videoEl.muted ? '🔇' : '🔊';
-          });
         }
 
         /**
@@ -1634,13 +1587,18 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         function exitPlayerMode() {
           isPlayerMode = false;
           tabBar.style.display = 'flex';
-          btnBack.classList.add('hidden');
 
           // 清理播放器
           const videoEl = document.getElementById('video-player');
           if (videoEl) {
             videoEl.pause();
             videoEl.src = '';
+          }
+
+          // 恢复之前保存的列表内容
+          if (savedListHtml) {
+            contentEl.innerHTML = savedListHtml;
+            savedListHtml = '';
           }
         }
 
@@ -1649,7 +1607,6 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         function clickVideo(el) {
           const bvid = el.dataset.bvid;
           if (bvid) {
-            showLoading();
             vscodeApi.postMessage({ type: 'clickVideo', bvid });
           }
         }
@@ -1657,7 +1614,6 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         function clickLive(el) {
           const roomId = parseInt(el.dataset.roomId, 10);
           if (roomId) {
-            showLoading();
             vscodeApi.postMessage({ type: 'clickLive', roomId });
           }
         }
@@ -1722,16 +1678,15 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
         function updateLoginUI(msg) {
           if (msg.loggedIn === true) {
-            btnLogin.classList.add('hidden');
-            btnLogout.classList.remove('hidden');
-            // 登录成功后自动切换到推荐视频列表并加载数据
+            menuLogin.classList.add('hidden');
+            menuLogout.classList.remove('hidden');
             currentView = 'recommendedVideos';
             highlightTab('recommendedVideos');
             showLoading();
             vscodeApi.postMessage({ type: 'switchView', view: 'recommendedVideos' });
           } else if (msg.loggedIn === false) {
-            btnLogin.classList.remove('hidden');
-            btnLogout.classList.add('hidden');
+            menuLogin.classList.remove('hidden');
+            menuLogout.classList.add('hidden');
           }
 
           // 更新登录 QR 码区域的提示文字
@@ -1753,6 +1708,14 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           const div = document.createElement('div');
           div.textContent = str;
           return div.innerHTML;
+        }
+
+        /** 确保 URL 使用 HTTPS 协议（B站图片链接可能是 // 开头的协议相对 URL） */
+        function ensureHttps(url) {
+          if (!url) { return ''; }
+          if (url.startsWith('//')) { return 'https:' + url; }
+          if (url.startsWith('http://')) { return url.replace('http://', 'https://'); }
+          return url;
         }
 
         /** 格式化秒数为 mm:ss 或 hh:mm:ss */

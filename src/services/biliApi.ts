@@ -246,7 +246,7 @@ export class BiliApiService {
     return (data.list || []).map((item: Record<string, unknown>) => ({
       id: item.id as number,
       title: item.title as string,
-      cover: item.cover as string,
+      cover: this._ensureHttps(item.cover as string),
       media_count: item.media_count as number,
     }));
   }
@@ -275,7 +275,7 @@ export class BiliApiService {
     const list = medias.map((item: Record<string, unknown>) => ({
       bvid: item.bvid as string,
       title: item.title as string,
-      cover: item.cover as string,
+      cover: this._ensureHttps(item.cover as string),
       author: (item.upper as Record<string, unknown>)?.name as string || '未知',
       duration: item.duration as number,
       playCount: (item.cnt_info as Record<string, unknown>)?.play as number || 0,
@@ -321,7 +321,7 @@ export class BiliApiService {
       const list = items.map((item: Record<string, unknown>) => ({
         bvid: item.bvid as string,
         title: item.title as string,
-        cover: item.pic as string,
+        cover: this._ensureHttps(item.pic as string),
         author: (item.owner as Record<string, unknown>)?.name as string || '未知',
         duration: item.duration as number,
         playCount: (item.stat as Record<string, unknown>)?.view as number || 0,
@@ -356,7 +356,7 @@ export class BiliApiService {
       const list = rawList.map((item: Record<string, unknown>) => ({
         roomId: item.roomid as number,
         title: item.title as string,
-        cover: item.cover as string,
+        cover: this._ensureHttps(item.cover as string),
         owner: item.uname as string,
         online: item.online as number,
         url: '',
@@ -391,7 +391,7 @@ export class BiliApiService {
     return list.map((item: Record<string, unknown>) => ({
       roomId: item.roomid as number,
       title: item.title as string,
-      cover: item.cover as string,
+      cover: this._ensureHttps(item.cover as string),
       owner: item.uname as string,
       online: item.online as number,
       url: '',
@@ -432,10 +432,12 @@ export class BiliApiService {
    * @param {number} [qn=80] - 清晰度值：16=360P, 32=480P, 64=720P, 80=1080P
    * @returns {Promise<MediaInfo | null>} 媒体流信息（URL + 格式），或 null
    */
-  async getVideoPlayUrl(bvid: string, cid: number, qn: number = 80): Promise<MediaInfo | null> {
+  async getVideoPlayUrl(bvid: string, cid: number, qn: number = 64): Promise<MediaInfo | null> {
     try {
+      // 使用 fnval=0 请求兼容的 MP4 格式（非 DASH）
+      // fnval=16 返回 DASH 格式（.m4s），浏览器 <video> 标签无法直接播放
       const response = await this.axiosInstance.get('https://api.bilibili.com/x/player/playurl', {
-        params: { bvid, cid, qn, fnval: 16, platform: 'web', fourk: 1 },
+        params: { bvid, cid, qn, fnval: 0, platform: 'web' },
       });
 
       const { code, data } = response.data;
@@ -443,13 +445,14 @@ export class BiliApiService {
         return null;
       }
 
-      const videoStreams = data?.dash?.video || [];
-
-      if (videoStreams.length === 0) {
+      // fnval=0 返回的是 durl 数组，包含可直接播放的 MP4 URL
+      const durl = data?.durl || [];
+      if (durl.length === 0) {
         return null;
       }
 
-      const videoUrl = videoStreams[0]?.baseUrl || videoStreams[0]?.base_url || '';
+      // 取第一个视频片段的 URL（高清视频可能有多个片段）
+      const videoUrl = this._ensureHttps(durl[0]?.url || durl[0]?.backup_url?.[0] || '');
 
       return {
         url: videoUrl,
@@ -670,6 +673,22 @@ export class BiliApiService {
 
     const signStr = sortedParams + mixinKey;
     return crypto.createHash('md5').update(signStr).digest('hex');
+  }
+
+  /**
+   * 将 URL 转换为 HTTPS 协议
+   *
+   * B站 API 返回的图片 URL 可能是协议相对 URL（//开头）
+   * 或 HTTP 协议，在 VSCode WebView 中必须使用 HTTPS 才能加载
+   *
+   * @param {string} url - 原始 URL
+   * @returns {string} HTTPS 协议的 URL
+   */
+  private _ensureHttps(url: string): string {
+    if (!url) { return ''; }
+    if (url.startsWith('//')) { return 'https:' + url; }
+    if (url.startsWith('http://')) { return url.replace('http://', 'https://'); }
+    return url;
   }
 
   // ==================== 辅助工具方法 ====================

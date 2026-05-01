@@ -18,3 +18,4 @@ export { BiliLoginService } from './biliLogin';
 export { SessionManager } from './sessionManager';
 export { BiliApiService } from './biliApi';
 export { DanmakuService } from './danmakuService';
+export { ProxyServer } from './proxyServer';

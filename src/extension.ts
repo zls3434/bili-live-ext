@@ -18,30 +18,39 @@
 
 import * as vscode from 'vscode';
 import { BiliMainViewProvider } from './webview/BiliMainViewProvider';
+import { ProxyServer } from './services/proxyServer';
 
 /**
- * 扩展激活函数
- *
- * 当用户首次使用扩展时（触发 activationEvents 中定义的事件），
- * VSCode 会调用此函数来初始化扩展。
+ * 代理服务器实例，在扩展激活时启动，停用时关闭
+ */
+let proxyServer: ProxyServer | null = null;
+
+/**
+ * 扩展激活函数（异步）
  *
  * 初始化流程：
- * 1. 创建 BiliMainViewProvider 实例并注册到侧边栏视图
- * 2. 注册所有用户可触发的命令
- * 3. 将相关 disposable 添加到 context.subscriptions 中以实现自动清理
+ * 1. 启动本地代理服务器（用于绕过 B站 CDN 防盗链）
+ * 2. 创建 BiliMainViewProvider 实例并注册到侧边栏
+ * 3. 注册所有用户可触发的命令
  *
  * @param {vscode.ExtensionContext} context - VSCode 扩展上下文
- * @returns {void}
+ * @returns {Promise<void>}
  */
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   try {
     // 创建输出通道用于调试日志
     const outputChannel = vscode.window.createOutputChannel('bilibili');
     context.subscriptions.push(outputChannel);
     outputChannel.appendLine('bilibili 扩展开始激活...');
 
-    // 步骤1：创建主视图提供者实例
-    const provider = new BiliMainViewProvider(context.extensionUri, context);
+    // 步骤0：启动本地代理服务器（用于绕过 B站 CDN 403 防盗链）
+    proxyServer = new ProxyServer();
+    await proxyServer.start();
+    const proxyBaseUrl = proxyServer.getBaseUrl();
+    outputChannel.appendLine(`代理服务器已启动: ${proxyBaseUrl}`);
+
+    // 步骤1：创建主视图提供者实例，传入代理 URL
+    const provider = new BiliMainViewProvider(context.extensionUri, context, proxyBaseUrl);
     outputChannel.appendLine('BiliMainViewProvider 实例创建成功');
 
     // 步骤2：注册侧边栏 Webview 视图提供者
@@ -134,6 +143,9 @@ export function activate(context: vscode.ExtensionContext): void {
  *
  * @returns {void}
  */
-export function deactivate(): void {
-  console.log('bilibili 扩展已停用');
+export function deactivate(): Promise<void> {
+  if (proxyServer) {
+    return proxyServer.stop();
+  }
+  return Promise.resolve();
 }
