@@ -7,55 +7,56 @@
  * - 注册侧边栏视图提供者（BiliMainViewProvider）
  * - 注册所有扩展命令（登录、打开视频、打开直播、返回）
  * - 管理扩展全局状态
+ * - 初始化全局日志管理器
  *
  * 在项目中的角色：
  * 该文件是整个 VSCode 扩展的启动入口，负责将所有模块串联起来
  *
- * @author zls3434
+ * @author qiweizhe
  * @date 2026-04-30
- * @modification 2026-04-30 zls3434 修复扩展激活问题，添加错误处理和异步激活支持
+ * @modification 2026-04-30 qiweizhe 初始化全局日志管理器，替代独立的输出通道
  */
 
 import * as vscode from 'vscode';
 import { BiliMainViewProvider } from './webview/BiliMainViewProvider';
 import { ProxyServer } from './services/proxyServer';
+import { OutputChannelManager } from './utils/outputChannelManager';
+import { logger } from './utils/logger';
 
-/**
- * 代理服务器实例，在扩展激活时启动，停用时关闭
- */
+/** 代理服务器实例，在扩展激活时启动，停用时关闭 */
 let proxyServer: ProxyServer | null = null;
 
 /**
  * 扩展激活函数（异步）
  *
  * 初始化流程：
- * 1. 启动本地代理服务器（用于绕过 B站 CDN 防盗链）
- * 2. 创建 BiliMainViewProvider 实例并注册到侧边栏
- * 3. 注册所有用户可触发的命令
+ * 1. 初始化全局日志管理器
+ * 2. 启动本地代理服务器（用于绕过 B站 CDN 防盗链）
+ * 3. 创建 BiliMainViewProvider 实例并注册到侧边栏
+ * 4. 注册所有用户可触发的命令
  *
  * @param {vscode.ExtensionContext} context - VSCode 扩展上下文
  * @returns {Promise<void>}
  */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   try {
-    // 创建输出通道用于调试日志
-    const outputChannel = vscode.window.createOutputChannel('bilibili');
-    context.subscriptions.push(outputChannel);
-    outputChannel.appendLine('bilibili 扩展开始激活...');
+    // 初始化全局日志管理器
+    const outputChannelManager = OutputChannelManager.getInstance();
+    logger.init(outputChannelManager);
+    context.subscriptions.push(outputChannelManager);
+
+    logger.info('bilibili 扩展开始激活...');
 
     // 步骤0：启动本地代理服务器（用于绕过 B站 CDN 403 防盗链）
     proxyServer = new ProxyServer();
     await proxyServer.start();
     const proxyBaseUrl = proxyServer.getBaseUrl();
-    outputChannel.appendLine(`代理服务器已启动: ${proxyBaseUrl}`);
+    logger.info(`代理服务器已启动: ${proxyBaseUrl}`);
 
     // 步骤1：创建主视图提供者实例，传入代理 URL
     const provider = new BiliMainViewProvider(context.extensionUri, context, proxyBaseUrl);
-    outputChannel.appendLine('BiliMainViewProvider 实例创建成功');
 
     // 步骤2：注册侧边栏 Webview 视图提供者
-    // 将 provider 关联到 package.json 中定义的 "bilibili-main-view" 视图
-    // webviewOptions.enableFindWidget 保留上下文切换时的状态
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(
         'bilibili-main-view',
@@ -67,7 +68,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       )
     );
-    outputChannel.appendLine('WebviewViewProvider 注册成功');
 
     // 步骤3：注册登录命令
     context.subscriptions.push(
@@ -126,10 +126,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       })
     );
 
-    outputChannel.appendLine('bilibili 扩展激活完成');
+    logger.info('bilibili 扩展激活完成');
   } catch (error) {
-    // 激活过程中出现错误时，输出到调试控制台并显示错误提示
-    console.error('bilibili 扩展激活失败:', error);
+    logger.error(`bilibili 扩展激活失败: ${error}`);
     vscode.window.showErrorMessage(`bilibili 扩展激活失败: ${error}`);
   }
 }
@@ -138,10 +137,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
  * 扩展停用函数
  *
  * 当扩展被禁用或 VSCode 关闭时调用，用于执行清理工作。
- * 由于所有 disposable 已通过 context.subscriptions 管理，
- * VSCode 会自动处理资源释放，此处无需额外操作。
  *
- * @returns {void}
+ * @returns {Promise<void>}
  */
 export function deactivate(): Promise<void> {
   if (proxyServer) {

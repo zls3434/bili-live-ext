@@ -28,6 +28,7 @@ import { BiliLoginService } from '../services/biliLogin';
 import { BiliApiService } from '../services/biliApi';
 import { DanmakuService } from '../services/danmakuService';
 import { OutputChannelManager } from '../utils/outputChannelManager';
+import { logger } from '../utils/logger';
 import * as QRCode from 'qrcode';
 
 /**
@@ -125,7 +126,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
     // 启动时自动尝试恢复登录态（异步执行，不阻塞构造函数）
     this._restoreSession().catch((err) => {
-      console.error('恢复登录态失败:', err);
+      logger.error(`恢复登录态失败: ${err}`);
     });
   }
 
@@ -148,7 +149,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           qrCodeUrl: '',
           qrCodeKey: '',
         };
-        console.log('bilibili 登录态已自动恢复');
+        logger.info('bilibili 登录态已自动恢复');
       }
     }
   }
@@ -551,7 +552,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               break;
             }
             default:
-              console.warn('未知的 Webview 消息类型:', message.type);
+              logger.warn(`未知的 Webview 消息类型: ${message.type}`);
           }
         }
       );
@@ -602,7 +603,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           break;
       }
     } catch (error) {
-      console.error(`加载视图数据失败 (${view}):`, error);
+      logger.error(`加载视图数据失败 (${view}): ${error}`);
     }
   }
 
@@ -701,7 +702,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         }
       }
     } catch (error) {
-      console.error('加载视频弹幕失败:', error);
+      logger.error(`加载视频弹幕失败: ${error}`);
     }
   }
 
@@ -719,31 +720,75 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    */
   private async _connectLiveDanmaku(roomId: number): Promise<void> {
     try {
-      // 获取弹幕 WebSocket 连接参数
+      // 获取弹幕 WebSocket 连接参数（host_list、token 等）
       const danmakuInfo = await this.apiService.getLiveDanmakuInfo(roomId);
-      if (!danmakuInfo || !danmakuInfo.host_list) {
-        console.warn('获取直播弹幕连接信息失败');
+      if (!danmakuInfo) {
+        logger.warn('获取直播弹幕连接信息失败：API 返回 null');
         return;
       }
 
-      // 从 host_list 获取 token（通常通过 getDanmuInfo 接口的 data.token 字段）
       const token = (danmakuInfo.token as string) || '';
+      const hostList = danmakuInfo.host_list as Array<Record<string, unknown>> || [];
+
+      // 调试：打印 API 返回的完整弹幕连接信息
+      logger.info(`getDanmuInfo 响应: token=${token ? token.substring(0, 20) + '...' : 'empty'}, host_list=${JSON.stringify(hostList)}`);
+
+      // 使用 API 返回的第一个弹幕服务器地址
+      // host_list 数据结构：{ host, port(常规TCP), wss_port(加密WS), ws_port(非加密WS) }
+      let hostInfo: { host: string; port: number; wsScheme: string } | undefined;
+      if (hostList.length > 0) {
+        const firstHost = hostList[0];
+        const wssPort = (firstHost.wss_port as number) || 0;
+        const wsPort = (firstHost.ws_port as number) || 0;
+        // 优先使用 wss 加密连接（端口 443），回退到 ws 非加密连接（端口 2244）
+        if (wssPort > 0) {
+          hostInfo = {
+            host: (firstHost.host as string) || 'broadcastlv.chat.bilibili.com',
+            port: wssPort,
+            wsScheme: 'wss',
+          };
+        } else if (wsPort > 0) {
+          hostInfo = {
+            host: (firstHost.host as string) || 'broadcastlv.chat.bilibili.com',
+            port: wsPort,
+            wsScheme: 'ws',
+          };
+        } else {
+          hostInfo = {
+            host: (firstHost.host as string) || 'broadcastlv.chat.bilibili.com',
+            port: (firstHost.port as number) || 443,
+            wsScheme: 'wss',
+          };
+        }
+      }
+
+      if (!token && hostList.length === 0) {
+        logger.warn('获取直播弹幕连接信息失败：缺少 token 和 host_list');
+        return;
+      }
+
+      logger.info(`弹幕连接信息: host=${hostInfo?.host}, port=${hostInfo?.port}, token=${token ? '已获取' : '缺失'}`);
 
       // 显示弹幕输出通道并清空旧内容
       this.outputChannelManager.showDanmakuChannel(true);
       this.outputChannelManager.clearDanmakuChannel();
 
-      // 连接到直播弹幕 WebSocket 服务器
+      // 获取当前登录用户的 UID（用于弹幕认证，真实 UID 避免弹幕用户名脱敏为 X***）
+      const uid = await this.apiService.getMyMid() || 0;
+
+      // 连接到直播弹幕 WebSocket 服务器（传入 API 返回的服务器地址和用户 UID）
       this.danmakuService.connectLiveDanmaku(
         roomId,
         token,
         (danmaku) => {
           const text = this.danmakuService.formatDanmakuText(danmaku);
           this.outputChannelManager.appendDanmaku(text);
-        }
+        },
+        hostInfo,
+        uid
       );
     } catch (error) {
-      console.error('连接直播弹幕失败:', error);
+      logger.error(`连接直播弹幕失败: ${error}`);
     }
   }
 
@@ -915,13 +960,16 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    * @param {vscode.Webview} webview - Webview 实例，用于生成 URI
    * @returns {string} 完整的 HTML 文档字符串
    */
-  private _getHtmlForWebview(_webview: vscode.Webview): string {
+  private _getHtmlForWebview(webview: vscode.Webview): string {
+    // 构建本地资源 URI（flv.js 播放库）
+    const flvJsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'flv.min.js'));
+
     return `<!DOCTYPE html>
     <html lang="zh-CN">
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:; media-src https: http://127.0.0.1:* blob:; connect-src https: wss: http://127.0.0.1:*;">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' ${webview.cspSource}; img-src https: data:; media-src https: http://127.0.0.1:* blob:; connect-src https: wss: http://127.0.0.1:*;">
       <title>bilibili 浏览</title>
       <style>
         /* ========== 全局重置与基础样式 ========== */
@@ -1250,6 +1298,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       </style>
     </head>
     <body>
+      <!-- flv.js 直播播放库（通过 MSE 在浏览器中播放 FLV 流） -->
+      <script src="${flvJsUri}"></script>
       <div class="container">
         <!-- Tab 切换按钮组 + 设置按钮 -->
         <div class="tab-bar" id="tab-bar">
@@ -1709,13 +1759,51 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         }
 
         /**
+         * flv.js 播放器实例（直播用）
+         * @type {object|null}
+         */
+        let flvPlayer = null;
+
+        /**
          * 设置播放器
+         *
+         * 视频播放：直接设置 video.src（浏览器原生支持 MP4）
+         * 直播播放：使用 flv.js 通过 MSE 播放 FLV 流（浏览器不原生支持 FLV）
+         *
+         * @param {Object} data - 播放器配置数据
+         * @param {string} data.url - 视频流 URL（已代理）
+         * @param {string} data.mediaType - 媒体类型（'video' 或 'live'）
+         * @param {string} data.format - 流格式（'mp4' 或 'flv'）
          */
         function setupPlayer(data) {
           const videoEl = document.getElementById('video-player');
           if (!videoEl) { return; }
 
-          videoEl.src = data.url;
+          // 销毁之前的 flv.js 实例（如有）
+          if (flvPlayer) {
+            flvPlayer.destroy();
+            flvPlayer = null;
+          }
+
+          if (data.mediaType === 'live' && data.format === 'flv' && typeof flvjs !== 'undefined' && flvjs.isSupported()) {
+            // 直播：使用 flv.js 通过 MSE 播放 FLV 流
+            flvPlayer = flvjs.createPlayer({
+              type: 'flv',
+              url: data.url,
+              isLive: true,
+              hasAudio: true,
+              hasVideo: true,
+            }, {
+              enableStashBuffer: false,
+              autoCleanupSourceBuffer: true,
+            });
+            flvPlayer.attachMediaElement(videoEl);
+            flvPlayer.load();
+            flvPlayer.play();
+          } else {
+            // 视频：直接设置 src（MP4 格式，浏览器原生支持）
+            videoEl.src = data.url;
+          }
         }
 
         /**
@@ -1726,7 +1814,13 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           saveState();
           tabBar.style.display = 'flex';
 
-          // 清理播放器
+          // 清理 flv.js 播放器（直播用）
+          if (flvPlayer) {
+            flvPlayer.destroy();
+            flvPlayer = null;
+          }
+
+          // 清理 video 元素
           const videoEl = document.getElementById('video-player');
           if (videoEl) {
             videoEl.pause();

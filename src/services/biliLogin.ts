@@ -18,6 +18,7 @@
  */
 
 import axios from 'axios';
+import { logger } from '../utils/logger';
 
 export class BiliLoginService {
 
@@ -125,11 +126,11 @@ export class BiliLoginService {
         // 如果 Cookie 中没有 SESSDATA，这不是真正的登录成功，
         // 可能是 B站 API 的异常响应，继续等待轮询
         if (!cookie || !cookie.includes('SESSDATA=')) {
-          console.log('[bilibili] code=0 但无有效 SESSDATA，继续轮询');
+          logger.info('code=0 但无有效 SESSDATA，继续轮询');
           return { status: 'waiting' };
         }
 
-        console.log('[bilibili] 登录成功，Cookie 长度:', cookie.length);
+        logger.info(`登录成功，Cookie 长度: ${cookie.length}`);
         return { status: 'success', cookie };
       }
       case 86101:
@@ -139,7 +140,7 @@ export class BiliLoginService {
       case 86038:
         return { status: 'expired' };
       default:
-        console.warn('[bilibili] 未知登录状态码:', code);
+        logger.warn(`未知登录状态码: ${code}`);
         return { status: 'waiting' };
     }
   }

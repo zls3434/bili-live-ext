@@ -28,6 +28,7 @@ import axios, { AxiosInstance } from 'axios';
 import { SessionManager } from './sessionManager';
 import { VideoInfo, LiveRoomInfo, MediaInfo } from '../types';
 import * as crypto from 'crypto';
+import { logger } from '../utils/logger';
 
 /** WBI 签名所需的字符重排映射表（固定常量） */
 const MIXIN_KEY_ENC_TAB = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52];
@@ -337,14 +338,19 @@ export class BiliApiService {
   /**
    * 获取推荐直播间列表（带分页）
    *
+   * 使用分区直播列表 API（parent_area_id=0 获取全站热门直播），
+   * 原推荐直播 API（xlive/web-interface/v1/second/getList）已需要 Wbi 签名鉴权，
+   * 改用分区列表 API 作为替代。
+   *
    * @param {number} [page=1] - 页码
+   * @param {number} [pageSize=30] - 每页数量
    * @returns {Promise<{ list: LiveRoomInfo[]; hasMore: boolean }>}
    */
-  async getRecommendedLives(page: number = 1): Promise<{ list: LiveRoomInfo[]; hasMore: boolean }> {
+  async getRecommendedLives(page: number = 1, pageSize: number = 30): Promise<{ list: LiveRoomInfo[]; hasMore: boolean }> {
     try {
       const response = await this.axiosInstance.get(
-        'https://api.live.bilibili.com/xlive/web-interface/v1/second/getList',
-        { params: { platform: 'web', page } }
+        'https://api.live.bilibili.com/room/v3/area/getRoomList',
+        { params: { parent_area_id: 0, page, page_size: pageSize, platform: 'web' } }
       );
 
       const { code, data } = response.data;
@@ -356,13 +362,12 @@ export class BiliApiService {
       const list = rawList.map((item: Record<string, unknown>) => ({
         roomId: item.roomid as number,
         title: item.title as string,
-        cover: this._ensureHttps(item.cover as string),
+        cover: this._ensureHttps((item.cover as string) || (item.user_cover as string) || (item.system_cover as string)),
         owner: item.uname as string,
         online: item.online as number,
         url: '',
       }));
-      // 有数据则假设还有更多
-      return { list, hasMore: list.length > 0 };
+      return { list, hasMore: list.length >= pageSize };
     } catch {
       return { list: [], hasMore: false };
     }
@@ -512,18 +517,23 @@ export class BiliApiService {
   }
 
   /**
-   * 获取直播间播放流地址
+   * 获取直播流播放地址
    *
-   * 返回 FLV 格式直播流 URL，支持多画质选择
+   * 优先获取 FLV 格式直播流，配合 flv.js 通过 MSE 在浏览器中播放。
+   * 如果 FLV 不可用，回退到 HLS（m3u8）格式。
    *
    * 画质参考（qn）：
    * - 80=流畅, 150=高清, 250=超清, 400=蓝光, 10000=原画
    *
+   * API 返回的 stream 结构：
+   * - protocol=http_stream → format=flv（FLV 格式，配合 flv.js 播放）
+   * - protocol=http_hls → format=ts/fmp4（HLS/m3u8 格式，浏览器 <video> 原生支持有限）
+   *
    * @param {number} roomId - 直播间房间号
-   * @param {number} [qn=10000] - 画质值
+   * @param {number} [qn=80] - 画质值（默认流畅，减少带宽）
    * @returns {Promise<MediaInfo | null>} 直播流 URL 和格式信息
    */
-  async getLivePlayUrl(roomId: number, qn: number = 10000): Promise<MediaInfo | null> {
+  async getLivePlayUrl(roomId: number, qn: number = 80): Promise<MediaInfo | null> {
     try {
       const response = await this.axiosInstance.get(
         'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo',
@@ -535,9 +545,12 @@ export class BiliApiService {
         return null;
       }
 
-      // 从嵌套响应中提取 FLV 直链
       const stream = data?.playurl_info?.playurl?.stream || [];
+
+      // 优先获取 FLV 格式，配合 flv.js 通过 MSE 在浏览器中播放
+      // FLV 格式：protocol=http_stream，format_name=flv
       for (const s of stream) {
+        if (s?.protocol_name !== 'http_stream') { continue; }
         const formats = s?.format || [];
         for (const fmt of formats) {
           if (fmt?.format_name === 'flv') {
@@ -557,6 +570,27 @@ export class BiliApiService {
           }
         }
       }
+
+      // 回退：获取 HLS（m3u8）格式（浏览器原生支持有限，需要 hls.js）
+      for (const s of stream) {
+        if (s?.protocol_name !== 'http_hls') { continue; }
+        const formats = s?.format || [];
+        for (const fmt of formats) {
+          const codecs = fmt?.codec || [];
+          for (const c of codecs) {
+            const urlInfos = c?.url_info || [];
+            if (urlInfos.length > 0) {
+              const host = urlInfos[0].host;
+              const baseUrl = c?.base_url || '';
+              const extra = urlInfos[0].extra || '';
+              return {
+                url: host + baseUrl + extra,
+                format: 'hls',
+              };
+            }
+          }
+        }
+      }
       return null;
     } catch {
       return null;
@@ -567,7 +601,8 @@ export class BiliApiService {
    * 获取直播弹幕 WebSocket 连接参数
    *
    * 返回弹幕服务器的地址、端口和认证 token，
-   * 客户端需要通过 WebSocket 连接到返回的服务器接收实时弹幕
+   * 客户端需要通过 WebSocket 连接到返回的服务器接收实时弹幕。
+   * 该接口需要 WBI 签名鉴权，否则返回 -352 错误。
    *
    * @param {number} roomId - 直播间房间号
    * @returns {Promise<Record<string, unknown> | null>}
@@ -575,17 +610,49 @@ export class BiliApiService {
    */
   async getLiveDanmakuInfo(roomId: number): Promise<Record<string, unknown> | null> {
     try {
-      const response = await this.axiosInstance.get(
+      // 确保 WBI 签名密钥已加载
+      await this._ensureWbiKeys();
+
+      const params: Record<string, string | number> = {
+        id: roomId,
+        type: 0,
+      };
+
+      // 添加 WBI 签名（该接口需要鉴权）
+      if (this.wbiImgKey && this.wbiSubKey) {
+        const wts = Math.floor(Date.now() / 1000);
+        params.wts = wts;
+        params.w_rid = this._generateWbiSign(params);
+      }
+
+      // getDanmuInfo API 对请求头敏感：
+      // 携带浏览器 User-Agent 时，B站会检测 TLS 指纹（JA3/JA4），
+      // 如果 TLS 指纹与 User-Agent 不匹配，返回 -352 错误。
+      // 因此使用独立的 axios 请求，只带 Cookie（获取真实 UID 绑定的 token），
+      // 不带 Chrome User-Agent 和 Referer。
+      const cookie = await this.sessionManager.getSession();
+      const headers: Record<string, string> = {};
+      if (cookie) {
+        headers['Cookie'] = cookie;
+      }
+
+      const response = await axios.get(
         'https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo',
-        { params: { id: roomId, type: 0 } }
+        {
+          params,
+          timeout: 10000,
+          headers,
+        }
       );
 
-      const { code, data } = response.data;
+      const { code, message, data } = response.data;
       if (code === 0) {
         return data;
       }
+      logger.warn(`getDanmuInfo 返回非零状态码: code=${code}, message=${message}`);
       return null;
-    } catch {
+    } catch (error) {
+      logger.error(`getDanmuInfo 请求失败: ${error}`);
       return null;
     }
   }
@@ -614,9 +681,12 @@ export class BiliApiService {
         // 从 URL 中提取文件名部分作为密钥（格式: xxx/bfs/wbi/{key}.png）
         this.wbiImgKey = this._extractWbiKey(data.wbi_img.img_url);
         this.wbiSubKey = this._extractWbiKey(data.wbi_img.sub_url);
+        logger.info(`WBI 密钥已加载: imgKey=${this.wbiImgKey?.substring(0, 8)}..., subKey=${this.wbiSubKey?.substring(0, 8)}...`);
+      } else {
+        logger.warn(`WBI 密钥获取失败: code=${code}, data=${data ? '有数据' : '无数据'}, wbi_img=${data?.wbi_img ? '有' : '无'}`);
       }
-    } catch {
-      // 密钥获取失败时保留空值，签名方法会安全降级
+    } catch (error) {
+      logger.error(`WBI 密钥获取请求失败: ${error}`);
     }
   }
 
@@ -664,15 +734,25 @@ export class BiliApiService {
       .join('')
       .substring(0, 32);
 
-    // 参数按 key 排序、URL 编码后拼接
+    // 参数按 key 排序、过滤特殊字符后拼接
+    // Wbi 签名要求：过滤 value 中的 !'()* 字符，空格编码为 %20（不是 +）
+    const charsToFilter = /[!'()*]/g;
     const sortedParams = Object.entries(params)
       .filter(([, v]) => v !== undefined)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+      .map(([k, v]) => {
+        const filteredValue = String(v).replace(charsToFilter, '');
+        return `${encodeURIComponent(k)}=${encodeURIComponent(filteredValue)}`;
+      })
       .join('&');
 
     const signStr = sortedParams + mixinKey;
-    return crypto.createHash('md5').update(signStr).digest('hex');
+    const w_rid = crypto.createHash('md5').update(signStr).digest('hex');
+
+    // 调试日志：打印签名计算过程
+    logger.info(`WBI 签名计算: mixinKey=${mixinKey}, sortedParams=${sortedParams.substring(0, 80)}, w_rid=${w_rid}`);
+
+    return w_rid;
   }
 
   /**
