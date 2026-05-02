@@ -26,7 +26,7 @@ import {
 import { SessionManager } from '../services/sessionManager';
 import { BiliLoginService } from '../services/biliLogin';
 import { BiliApiService } from '../services/biliApi';
-import { DanmakuService } from '../services/danmakuService';
+import { DanmakuService, DanmakuItem } from '../services/danmakuService';
 import { OutputChannelManager } from '../utils/outputChannelManager';
 import { logger } from '../utils/logger';
 import * as QRCode from 'qrcode';
@@ -97,6 +97,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
   /** 输出通道管理器单例，管理弹幕输出通道 */
   private readonly outputChannelManager: OutputChannelManager;
+
+  /** 视频弹幕按时间排序的列表（按播放进度逐条输出） */
+  private _videoDanmakuList: DanmakuItem[] = [];
+
+  /** 视频弹幕当前输出位置指针（已输出到哪个索引） */
+  private _videoDanmakuIndex: number = 0;
 
   /** 登录轮询定时器引用，用于停止轮询 */
   private _loginPollingTimer?: NodeJS.Timeout;
@@ -362,8 +368,9 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         cid,
       });
 
-      // 加载并输出视频弹幕（XML 格式），分段获取
-      this._loadVideoDanmaku(cid);
+      // 加载并输出视频弹幕，根据视频时长分段获取
+      const videoDuration = (videoInfo.duration as number) || 0;
+      this._loadVideoDanmaku(cid, videoDuration);
     } catch (error) {
       vscode.window.showErrorMessage(`打开视频失败: ${error}`);
     }
@@ -528,6 +535,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               await this.goBack();
               break;
             }
+            case 'videoProgress': {
+              // 视频播放进度更新，推送对应时间的弹幕到 bilidm 通道
+              const currentMs = message.currentMs as number;
+              this._onVideoProgress(currentMs);
+              break;
+            }
             case 'login': {
               vscode.commands.executeCommand('bilibili.login');
               break;
@@ -685,22 +698,110 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    * @param {number} cid - 视频 cid（弹幕所属资源 ID）
    * @returns {Promise<void>}
    */
-  private async _loadVideoDanmaku(cid: number): Promise<void> {
+  /**
+   * 视频播放进度更新回调
+   *
+   * 根据当前播放时间（毫秒），将已到达时间的弹幕逐条输出到 bilidm 通道。
+   * 使用位置指针避免同一弹幕被重复输出。
+   * 支持视频 seek 操作：如果当前时间小于上次输出的弹幕时间，
+   * 则回退指针位置以重新输出对应时间的弹幕。
+   *
+   * @param {number} currentMs - 当前视频播放时间（毫秒）
+   * @returns {void}
+   */
+  private _onVideoProgress(currentMs: number): void {
+    if (this._videoDanmakuList.length === 0) { return; }
+
+    // 支持视频拖拽进度条（seek）：如果当前时间比指针位置对应的弹幕时间早，
+    // 需要回退指针到合适的位置
+    if (this._videoDanmakuIndex > 0 && this._videoDanmakuList.length > 0) {
+      const lastOutputtedTime = this._videoDanmakuList[this._videoDanmakuIndex - 1].timestamp;
+      // 当前时间比上次输出的弹幕时间早超过 3 秒，说明用户拖拽了进度条
+      if (currentMs < lastOutputtedTime - 3000) {
+        // 二分查找回退指针到当前时间附近
+        this._videoDanmakuIndex = this._findDanmakuIndexByTime(currentMs);
+        // 清空弹幕通道，准备重新显示
+        this.outputChannelManager.clearDanmakuChannel();
+        this.outputChannelManager.appendDanmaku('--- 弹幕将随视频播放进度显示 ---');
+      }
+    }
+
+    // 从当前位置指针开始，输出所有时间戳 <= 当前播放时间的弹幕
+    while (this._videoDanmakuIndex < this._videoDanmakuList.length) {
+      const danmaku = this._videoDanmakuList[this._videoDanmakuIndex];
+      if (danmaku.timestamp <= currentMs) {
+        const text = this.danmakuService.formatDanmakuText(danmaku);
+        this.outputChannelManager.appendDanmaku(text);
+        this._videoDanmakuIndex++;
+      } else {
+        break;
+      }
+    }
+  }
+
+  /**
+   * 二分查找弹幕索引位置
+   *
+   * 找到第一个 timestamp >= targetMs 的弹幕索引，
+   * 用于视频 seek 后恢复弹幕位置指针。
+   *
+   * @param {number} targetMs - 目标时间（毫秒）
+   * @returns {number} 弹幕索引位置
+   */
+  private _findDanmakuIndexByTime(targetMs: number): number {
+    let lo = 0;
+    let hi = this._videoDanmakuList.length;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (this._videoDanmakuList[mid].timestamp < targetMs) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
+  }
+
+  private async _loadVideoDanmaku(cid: number, videoDurationSec: number = 0): Promise<void> {
     try {
       this.outputChannelManager.showDanmakuChannel(true);
       this.outputChannelManager.clearDanmakuChannel();
+      this.outputChannelManager.appendDanmaku('--- 弹幕将随视频播放进度显示 ---');
 
-      // 尝试获取前 3 段弹幕（覆盖约 18 分钟内容）
-      for (let seg = 1; seg <= 3; seg++) {
+      // 重置弹幕队列和位置指针
+      this._videoDanmakuList = [];
+      this._videoDanmakuIndex = 0;
+
+      // B站弹幕分段：每段 6 分钟（360 秒），每段最多 6000 条弹幕
+      // 根据视频时长计算需要获取的段数，不设上限（长视频可以有很多段）
+      const SEGMENT_DURATION = 360;
+      const maxSegments = videoDurationSec > 0
+        ? Math.ceil(videoDurationSec / SEGMENT_DURATION)
+        : 1;
+
+      const allDanmaku: DanmakuItem[] = [];
+      for (let seg = 1; seg <= maxSegments; seg++) {
         const xmlData = await this.apiService.getVideoDanmaku(cid, seg);
         if (!xmlData) { continue; }
-
         const danmakuList = this.danmakuService.parseVideoDanmakuXML(xmlData);
-        for (const item of danmakuList) {
-          const text = this.danmakuService.formatDanmakuText(item);
-          this.outputChannelManager.appendDanmaku(text);
+        allDanmaku.push(...danmakuList);
+        // 如果返回的弹幕数为 0，后续段也不会有数据，提前退出
+        if (danmakuList.length === 0) { break; }
+      }
+
+      // 按弹幕出现时间排序并去重（相同时间+相同内容的弹幕只保留一条）
+      allDanmaku.sort((a, b) => a.timestamp - b.timestamp);
+      const dedupedDanmaku: DanmakuItem[] = [];
+      for (const item of allDanmaku) {
+        const prev = dedupedDanmaku[dedupedDanmaku.length - 1];
+        if (!prev || prev.timestamp !== item.timestamp || prev.text !== item.text) {
+          dedupedDanmaku.push(item);
         }
       }
+
+      this._videoDanmakuList = dedupedDanmaku;
+
+      logger.info(`视频弹幕已加载: ${dedupedDanmaku.length} 条（原始 ${allDanmaku.length} 条，${maxSegments} 段），等待播放进度推送`);
     } catch (error) {
       logger.error(`加载视频弹幕失败: ${error}`);
     }
@@ -801,6 +902,9 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    */
   private _disconnectDanmaku(): void {
     this.danmakuService.disconnectLiveDanmaku();
+    // 清理视频弹幕队列
+    this._videoDanmakuList = [];
+    this._videoDanmakuIndex = 0;
   }
 
   /**
@@ -1775,6 +1879,9 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
          * @param {string} data.mediaType - 媒体类型（'video' 或 'live'）
          * @param {string} data.format - 流格式（'mp4' 或 'flv'）
          */
+       // 上次推送弹幕的播放时间（毫秒），用于避免重复推送
+        let lastPushedMs = -1;
+
         function setupPlayer(data) {
           const videoEl = document.getElementById('video-player');
           if (!videoEl) { return; }
@@ -1784,6 +1891,9 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
             flvPlayer.destroy();
             flvPlayer = null;
           }
+
+          // 移除旧的 timeupdate 监听器（如有）
+          videoEl.removeEventListener('timeupdate', onVideoTimeUpdate);
 
           if (data.mediaType === 'live' && data.format === 'flv' && typeof flvjs !== 'undefined' && flvjs.isSupported()) {
             // 直播：使用 flv.js 通过 MSE 播放 FLV 流
@@ -1804,6 +1914,28 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
             // 视频：直接设置 src（MP4 格式，浏览器原生支持）
             videoEl.src = data.url;
           }
+
+          // 视频（非直播）模式：监听 timeupdate 事件推送弹幕
+          if (data.mediaType === 'video') {
+            lastPushedMs = -1;
+            videoEl.addEventListener('timeupdate', onVideoTimeUpdate);
+          }
+        }
+
+        /**
+         * 视频播放进度更新回调
+         *
+         * 将当前播放时间（毫秒）发送给扩展侧，
+         * 扩展侧根据播放进度推送对应时间的弹幕到 bilidm 通道。
+         * 使用节流机制（时间变化小于 200ms 时不推送）避免消息过多。
+         */
+        function onVideoTimeUpdate(event) {
+          var videoEl = event.target;
+          var currentMs = Math.floor(videoEl.currentTime * 1000);
+          // 节流：时间变化小于 200ms 时不推送
+          if (currentMs - lastPushedMs < 200 && currentMs >= lastPushedMs) { return; }
+          lastPushedMs = currentMs;
+          vscodeApi.postMessage({ type: 'videoProgress', currentMs: currentMs });
         }
 
         /**
@@ -1820,12 +1952,16 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
             flvPlayer = null;
           }
 
-          // 清理 video 元素
+          // 清理 video 元素和 timeupdate 事件监听器
           const videoEl = document.getElementById('video-player');
           if (videoEl) {
+            videoEl.removeEventListener('timeupdate', onVideoTimeUpdate);
             videoEl.pause();
             videoEl.src = '';
           }
+
+          // 重置弹幕进度追踪状态
+          lastPushedMs = -1;
 
           // 恢复之前保存的列表内容
           if (savedListHtml) {
