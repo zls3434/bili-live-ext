@@ -89,10 +89,18 @@ export interface FollowGroup {
  * 内容视图枚举
  *
  * 定义扩展中可以切换展示的内容类型视图
+ * 修改日期：2026-05-02
+ * 修改人：qiweizhe
+ * 修改目的：新增 followsVideos（关注动态）和 followsLive（关注直播中）两个子视图，
+ *          用于在"我的关注"视图下提供子 Tab 切换功能
  */
 export enum ContentView {
-  /** 关注内容视图 */
+  /** 关注内容视图（关注UP主列表） */
   follows = 'follows',
+  /** 关注动态视图（关注UP主的最新视频投稿，按时间排序） */
+  followsVideos = 'followsVideos',
+  /** 关注直播中视图（正在直播的关注UP主列表） */
+  followsLive = 'followsLive',
   /** 收藏内容视图 */
   favorites = 'favorites',
   /** 推荐视频视图 */

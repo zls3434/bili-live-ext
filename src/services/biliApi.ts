@@ -173,25 +173,51 @@ export class BiliApiService {
    * @returns {Promise<VideoInfo[]>} 视频信息数组
    */
   async getUserVideos(mid: number, pn: number = 1, ps: number = 30): Promise<VideoInfo[]> {
-    const response = await this.axiosInstance.get('https://api.bilibili.com/x/space/wbi/arc/search', {
-      params: { mid, pn, ps, order: 'pubdate', tid: 0, keyword: '', platform: 'web' },
-    });
+    try {
+      // 确保 WBI 签名密钥已加载（该接口需要 WBI 签名）
+      await this._ensureWbiKeys();
 
-    const { code, data } = response.data;
-    if (code !== 0) {
+      const params: Record<string, string | number> = {
+        mid,
+        pn,
+        ps,
+        order: 'pubdate',
+        tid: 0,
+        keyword: '',
+        platform: 'web',
+      };
+
+      // 添加 WBI 签名
+      if (this.wbiImgKey && this.wbiSubKey) {
+        const wts = Math.floor(Date.now() / 1000);
+        params.wts = wts;
+        params.w_rid = this._generateWbiSign(params);
+      }
+
+      const response = await this.axiosInstance.get('https://api.bilibili.com/x/space/wbi/arc/search', {
+        params,
+      });
+
+      const { code, data, message } = response.data;
+      if (code !== 0) {
+        logger.warn(`getUserVideos 返回错误: code=${code}, message=${message}`);
+        return [];
+      }
+
+      const vlist = data?.list?.vlist || [];
+      return vlist.map((item: Record<string, unknown>) => ({
+        bvid: item.bvid as string,
+        title: item.title as string,
+        cover: item.pic as string,
+        author: item.author as string,
+        duration: this._parseDuration(item.length as string),
+        playCount: item.play as number,
+        danmakuCount: item.video_review as number,
+      }));
+    } catch (error) {
+      logger.error(`getUserVideos 请求失败: ${error}`);
       return [];
     }
-
-    const vlist = data?.list?.vlist || [];
-    return vlist.map((item: Record<string, unknown>) => ({
-      bvid: item.bvid as string,
-      title: item.title as string,
-      cover: item.pic as string,
-      author: item.author as string,
-      duration: this._parseDuration(item.length as string),
-      playCount: item.play as number,
-      danmakuCount: item.video_review as number,
-    }));
   }
 
   /**

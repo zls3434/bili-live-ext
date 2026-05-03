@@ -22,6 +22,8 @@ import * as vscode from 'vscode';
 import {
   ContentView,
   LoginStatus,
+  LiveRoomInfo,
+  VideoInfo,
 } from '../types';
 import { SessionManager } from '../services/sessionManager';
 import { BiliLoginService } from '../services/biliLogin';
@@ -72,9 +74,17 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     qrCodeKey: '',
   };
 
-  /** 分页状态：每个视图的当前页码 */
+  /**
+   * 分页状态：每个视图的当前页码
+   *
+   * 修改日期：2026-05-02
+   * 修改人：qiweizhe
+   * 修改目的：新增 followsVideos 和 followsLive 的分页状态
+   */
   private _pageState: Record<string, { page: number; hasMore: boolean; loading: boolean }> = {
     follows: { page: 1, hasMore: true, loading: false },
+    followsVideos: { page: 1, hasMore: true, loading: false },
+    followsLive: { page: 1, hasMore: true, loading: false },
     favorites: { page: 1, hasMore: true, loading: false },
     recommendedVideos: { page: 1, hasMore: true, loading: false },
     recommendedLives: { page: 1, hasMore: true, loading: false },
@@ -564,6 +574,15 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               await this._loadViewData(refreshView);
               break;
             }
+            case 'clearCache': {
+              // 清空所有视图数据缓存和分页状态
+              for (const key of Object.keys(this._viewHasData)) {
+                this._viewHasData[key] = false;
+              }
+              this._resetAllPageState();
+              vscode.window.showInformationMessage('缓存已清理');
+              break;
+            }
             default:
               logger.warn(`未知的 Webview 消息类型: ${message.type}`);
           }
@@ -592,9 +611,15 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    *
    * 各视图的数据来源：
    * - follows: 关注列表 + 每个UP主的最新视频/直播状态
+   * - followsVideos: 关注UP主的最新视频投稿（聚合后按时间排序）
+   * - followsLive: 正在直播的关注UP主列表
    * - favorites: 收藏夹列表
    * - recommendedVideos: 首页推荐视频
    * - recommendedLives: 推荐直播间
+   *
+   * 修改日期：2026-05-02
+   * 修改人：qiweizhe
+   * 修改目的：新增 followsVideos 和 followsLive 视图的数据加载分支
    *
    * @param {ContentView} view - 要加载数据的目标视图类型
    * @returns {Promise<void>}
@@ -604,6 +629,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       switch (view) {
         case ContentView.follows:
           await this._loadFollowsData();
+          break;
+        case ContentView.followsVideos:
+          await this._loadFollowsVideosData();
+          break;
+        case ContentView.followsLive:
+          await this._loadFollowsLiveData();
           break;
         case ContentView.favorites:
           await this._loadFavoritesData();
@@ -622,9 +653,17 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
   // ==================== 数据缓存 ====================
 
-  /** 缓存每个视图是否已有数据（避免切换 Tab 时重复加载） */
+  /**
+   * 缓存每个视图是否已有数据（避免切换 Tab 时重复加载）
+   *
+   * 修改日期：2026-05-02
+   * 修改人：qiweizhe
+   * 修改目的：新增 followsVideos 和 followsLive 的缓存标记
+   */
   private _viewHasData: Record<string, boolean> = {
     follows: false,
+    followsVideos: false,
+    followsLive: false,
     favorites: false,
     recommendedVideos: false,
     recommendedLives: false,
@@ -662,6 +701,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
   private _resetPageState(view: ContentView): void {
     const key = Object.keys(ContentView).find(k => ContentView[k as keyof typeof ContentView] === view);
     if (key && this._pageState[key]) {
+      this._pageState[key] = { page: 1, hasMore: true, loading: false };
+    }
+  }
+
+  private _resetAllPageState(): void {
+    for (const key of Object.keys(this._pageState)) {
       this._pageState[key] = { page: 1, hasMore: true, loading: false };
     }
   }
@@ -950,6 +995,139 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       });
     } catch (error) {
       this._postMessage({ type: 'updateListData', view: ContentView.follows, data: [], error: `获取关注列表失败: ${error}`, hasMore: false });
+    } finally {
+      state.loading = false;
+    }
+  }
+
+  /**
+   * 加载"关注动态"数据（关注UP主的最新视频投稿，聚合后按时间排序）
+   *
+   * 流程：
+   * 1. 获取当前用户 mid
+   * 2. 获取关注列表
+   * 3. 对每个关注UP主获取最新视频投稿
+   * 4. 聚合所有视频并按发布时间倒序排列
+   * 5. 支持分页加载
+   *
+   * 修改日期：2026-05-02
+   * 修改人：qiweizhe
+   * 修改目的：新增关注动态数据加载方法，用于"我的关注"子Tab"动态"功能
+   *
+   * @returns {Promise<void>}
+   */
+  private async _loadFollowsVideosData(): Promise<void> {
+    const mid = await this.apiService.getMyMid();
+    if (!mid) {
+      this._postMessage({ type: 'updateListData', view: ContentView.followsVideos, data: [], error: '请先登录后再查看关注动态', hasMore: false });
+      return;
+    }
+
+    const state = this._pageState['followsVideos'];
+    if (state.loading) { return; }
+    state.loading = true;
+
+    try {
+      // 获取关注列表（只取前20个UP主，避免并发请求过多被限流）
+      const followResult = await this.apiService.getMyFollowing(mid, 1, 20);
+      const followList = followResult.list;
+
+      // 逐个获取UP主的最新视频（避免并发请求过多被限流，每次5个并发）
+      const batchSize = 5;
+      const allVideos: VideoInfo[] = [];
+      for (let i = 0; i < followList.length; i += batchSize) {
+        const batch = followList.slice(i, i + batchSize);
+        const videoResults = await Promise.all(
+          batch.map(async (follow) => {
+            try {
+              const videos = await this.apiService.getUserVideos(follow.mid, 1, 5);
+              return videos;
+            } catch (error) {
+              logger.warn(`获取UP主 ${follow.uname}(${follow.mid}) 的视频失败: ${error}`);
+              return [];
+            }
+          })
+        );
+        allVideos.push(...videoResults.flat());
+      }
+
+      logger.info(`关注动态: 获取了 ${followList.length} 个UP主的视频，共 ${allVideos.length} 条`);
+      this._markViewHasData(ContentView.followsVideos);
+
+      // 关注动态一次加载全部结果，不需要翻页
+      state.hasMore = false;
+      this._postMessage({
+        type: state.page === 1 ? 'updateListData' : 'appendListData',
+        view: ContentView.followsVideos,
+        data: allVideos,
+        hasMore: false,
+      });
+    } catch (error) {
+      this._postMessage({ type: 'updateListData', view: ContentView.followsVideos, data: [], error: `获取关注动态失败: ${error}`, hasMore: false });
+    } finally {
+      state.loading = false;
+    }
+  }
+
+  /**
+   * 加载"关注直播中"数据（正在直播的关注UP主列表）
+   *
+   * 流程：
+   * 1. 获取当前用户 mid
+   * 2. 获取关注列表
+   * 3. 对每个关注UP主查询直播状态
+   * 4. 过滤出正在直播的UP主，构造 LiveRoomInfo 列表
+   *
+   * 修改日期：2026-05-02
+   * 修改人：qiweizhe
+   * 修改目的：新增关注直播数据加载方法，用于"我的关注"子Tab"直播中"功能
+   *
+   * @returns {Promise<void>}
+   */
+  private async _loadFollowsLiveData(): Promise<void> {
+    const mid = await this.apiService.getMyMid();
+    if (!mid) {
+      this._postMessage({ type: 'updateListData', view: ContentView.followsLive, data: [], error: '请先登录后再查看直播列表', hasMore: false });
+      return;
+    }
+
+    const state = this._pageState['followsLive'];
+    if (state.loading) { return; }
+    state.loading = true;
+
+    try {
+      // 获取关注列表
+      const followResult = await this.apiService.getMyFollowing(mid, 1, 50);
+      const followList = followResult.list;
+
+      // 并发查询每个UP主的直播状态
+      const livePromises = followList.map(async (follow) => {
+        try {
+          const liveInfo = await this.apiService.getUserLiveStatus(follow.mid);
+          if (liveInfo) {
+            return liveInfo;
+          }
+          return null;
+        } catch {
+          return null;
+        }
+      });
+      const liveResults = await Promise.all(livePromises);
+
+      // 过滤出正在直播的UP主
+      const liveRooms = liveResults.filter((item): item is LiveRoomInfo => item !== null);
+      this._markViewHasData(ContentView.followsLive);
+
+      // 直播列表一次加载全部结果，不需要翻页
+      state.hasMore = false;
+      this._postMessage({
+        type: state.page === 1 ? 'updateListData' : 'appendListData',
+        view: ContentView.followsLive,
+        data: liveRooms,
+        hasMore: false,
+      });
+    } catch (error) {
+      this._postMessage({ type: 'updateListData', view: ContentView.followsLive, data: [], error: `获取关注直播失败: ${error}`, hasMore: false });
     } finally {
       state.loading = false;
     }
@@ -1381,6 +1559,31 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         .fav-card .fav-count { font-size: 10px; color: var(--vscode-descriptionForeground); }
 
         /* ========== 关注用户列表 ========== */
+        /* 关注子Tab样式 - 修改日期：2026-05-02 qiweizhe 新增关注子Tab样式 */
+        .follow-sub-tabs {
+          display: flex;
+          padding: 4px 8px;
+          gap: 2px;
+          border-bottom: 1px solid var(--vscode-sideBar-border);
+        }
+        .follow-sub-tab {
+          padding: 3px 10px;
+          border: none;
+          border-radius: 3px;
+          background: none;
+          color: var(--vscode-foreground);
+          cursor: pointer;
+          font-size: 11px;
+          opacity: 0.7;
+          transition: opacity 0.15s, background-color 0.15s, color 0.15s;
+        }
+        .follow-sub-tab:hover { opacity: 0.9; background-color: var(--vscode-toolbar-hoverBackground); }
+        .follow-sub-tab.active {
+          opacity: 1;
+          color: #FB7299;
+          font-weight: 600;
+          background-color: rgba(251, 114, 153, 0.1);
+        }
         .follow-card {
           display: flex;
           gap: 8px;
@@ -1407,10 +1610,10 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       <div class="container">
         <!-- Tab 切换按钮组 + 设置按钮 -->
         <div class="tab-bar" id="tab-bar">
-          <button class="tab-btn active" data-view="recommendedVideos">推荐视频</button>
-          <button class="tab-btn" data-view="recommendedLives">推荐直播</button>
-          <button class="tab-btn" data-view="follows">我的关注</button>
-          <button class="tab-btn" data-view="favorites">我的收藏</button>
+          <button class="tab-btn active" data-view="recommendedVideos">推荐</button>
+          <button class="tab-btn" data-view="recommendedLives">直播</button>
+          <button class="tab-btn" data-view="follows">关注</button>
+          <button class="tab-btn" data-view="favorites">收藏</button>
           <span class="tab-spacer"></span>
           <button class="refresh-btn" id="btn-refresh" title="刷新">↻</button>
           <button class="settings-btn" id="btn-settings" title="设置">⚙</button>
@@ -1420,6 +1623,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         <div class="settings-menu" id="settings-menu">
           <button class="settings-menu-item" id="menu-login">登录</button>
           <button class="settings-menu-item hidden" id="menu-logout">退出登录</button>
+          <button class="settings-menu-item" id="menu-clear-cache">清理缓存</button>
         </div>
 
         <!-- 主内容区 -->
@@ -1567,6 +1771,22 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           settingsMenu.classList.remove('show');
         });
 
+        /** 清理缓存按钮（设置菜单内） */
+        const menuClearCache = document.getElementById('menu-clear-cache');
+        menuClearCache.addEventListener('click', () => {
+          // 清空前端缓存
+          Object.keys(viewCache).forEach(key => { viewCache[key] = ''; });
+          savedListHtml = '';
+          vscodeApi.setState({});
+          // 重置视图状态
+          contentEl.innerHTML = '<div class="status-area"><div class="icon">✅</div><div class="msg">缓存已清理，刷新中...</div></div>';
+          settingsMenu.classList.remove('show');
+          // 重新加载当前视图
+          setTimeout(() => {
+            vscodeApi.postMessage({ type: 'refresh', view: currentView });
+          }, 500);
+        });
+
         // ==================== Tab 切换事件 ====================
 
         tabBar.addEventListener('click', (e) => {
@@ -1591,6 +1811,39 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
               // 通知扩展主进程切换视图
               vscodeApi.postMessage({ type: 'switchView', view });
+            }
+          }
+        });
+
+        // ==================== 关注子Tab切换事件 ====================
+
+        /**
+         * 关注子Tab点击事件处理
+         *
+         * 修改日期：2026-05-02
+         * 修改人：qiweizhe
+         * 修改目的：新增关注子Tab的点击切换逻辑，点击后在"关注列表/动态/直播中"之间切换
+         *
+         * 使用事件委托监听 follow-sub-tab 按钮的点击事件
+         */
+        contentEl.addEventListener('click', (e) => {
+          const target = e.target;
+          if (target.classList.contains('follow-sub-tab')) {
+            const subView = target.dataset.subView;
+            if (subView && !isPlayerMode) {
+              // 保存当前关注视图内容到缓存
+              viewCache[currentView] = contentEl.innerHTML;
+
+              // 更新当前视图到子视图
+              currentView = subView;
+
+              // 如果目标子视图有缓存则直接恢复，否则显示加载中并请求数据
+              if (viewCache[subView]) {
+                contentEl.innerHTML = viewCache[subView];
+              } else {
+                showLoading();
+                vscodeApi.postMessage({ type: 'switchView', view: subView });
+              }
             }
           }
         });
@@ -1669,16 +1922,35 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
         /**
          * 根据视图类型渲染内容列表
+         *
+         * 修改日期：2026-05-02
+         * 修改人：qiweizhe
+         * 修改目的：新增 followsVideos 和 followsLive 视图的渲染分支
+         *
          * @param {string} view - 视图类型
          * @param {Array} data - 数据数组
          * @param {string} errorMsg - 可选的错误信息
          */
         function renderListByView(view, data, errorMsg) {
           if (errorMsg) {
+            // 关注子视图的错误消息需要带子Tab栏
+            if (view === 'followsVideos' || view === 'followsLive') {
+              let html = buildFollowSubTabs(view);
+              html += '<div class="status-area"><div class="icon">😕</div><div class="msg">' + escapeHtml(errorMsg) + '</div></div>';
+              contentEl.innerHTML = html;
+              return;
+            }
             contentEl.innerHTML = '<div class="status-area"><div class="icon">😕</div><div class="msg">' + escapeHtml(errorMsg) + '</div></div>';
             return;
           }
           if (!data || data.length === 0) {
+            // 关注子视图的空数据需要带子Tab栏
+            if (view === 'followsVideos' || view === 'followsLive') {
+              let html = buildFollowSubTabs(view);
+              html += '<div class="status-area"><div class="icon">📭</div><div class="msg">暂无内容</div></div>';
+              contentEl.innerHTML = html;
+              return;
+            }
             contentEl.innerHTML = '<div class="status-area"><div class="icon">📭</div><div class="msg">暂无内容</div></div>';
             return;
           }
@@ -1686,6 +1958,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           switch (view) {
             case 'follows':
               renderFollowingList(data);
+              break;
+            case 'followsVideos':
+              renderFollowsVideos(data);
+              break;
+            case 'followsLive':
+              renderFollowsLive(data);
               break;
             case 'favorites':
               renderFavoriteFolders(data);
@@ -1762,9 +2040,59 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
         /**
          * 渲染关注列表
+         *
+         * 修改日期：2026-05-02
+         * 修改人：qiweizhe
+         * 修改目的：在关注列表下方添加子Tab（动态/直播中），支持子视图切换
          */
+        /**
+         * 构建关注子Tab栏 HTML
+         *
+         * @param {string} activeView - 当前激活的子视图名称
+         * @returns {string} 子Tab栏 HTML
+         */
+        function buildFollowSubTabs(activeView) {
+          let html = '<div class="follow-sub-tabs">';
+          html += '<button class="follow-sub-tab' + (activeView === 'follows' ? ' active' : '') + '" data-sub-view="follows">关注列表</button>';
+          html += '<button class="follow-sub-tab' + (activeView === 'followsVideos' ? ' active' : '') + '" data-sub-view="followsVideos">动态</button>';
+          html += '<button class="follow-sub-tab' + (activeView === 'followsLive' ? ' active' : '') + '" data-sub-view="followsLive">直播中</button>';
+          html += '</div>';
+          return html;
+        }
+
         function renderFollowingList(followItems) {
-          let html = '<div class="card-list">' + buildFollowCards(followItems);
+          let html = buildFollowSubTabs('follows');
+          html += '<div class="card-list">' + buildFollowCards(followItems);
+          if (hasMoreData) { html += '<div id="load-more-indicator" class="status-area" style="display:none"><div class="loading-spinner"></div><span class="msg">加载更多...</span></div>'; }
+          html += '</div>';
+          contentEl.innerHTML = html;
+        }
+
+        /**
+         * 渲染"关注动态"子Tab（关注UP主的最新视频投稿列表）
+         *
+         * 修改日期：2026-05-02
+         * 修改人：qiweizhe
+         * 修改目的：新增关注动态渲染函数，复用视频卡片样式
+         */
+        function renderFollowsVideos(videos) {
+          let html = buildFollowSubTabs('followsVideos');
+          html += '<div class="card-list">' + buildVideoCards(videos);
+          if (hasMoreData) { html += '<div id="load-more-indicator" class="status-area" style="display:none"><div class="loading-spinner"></div><span class="msg">加载更多...</span></div>'; }
+          html += '</div>';
+          contentEl.innerHTML = html;
+        }
+
+        /**
+         * 渲染"关注直播中"子Tab（正在直播的关注UP主列表）
+         *
+         * 修改日期：2026-05-02
+         * 修改人：qiweizhe
+         * 修改目的：新增关注直播渲染函数，复用直播卡片样式
+         */
+        function renderFollowsLive(lives) {
+          let html = buildFollowSubTabs('followsLive');
+          html += '<div class="card-list">' + buildLiveCards(lives);
           if (hasMoreData) { html += '<div id="load-more-indicator" class="status-area" style="display:none"><div class="loading-spinner"></div><span class="msg">加载更多...</span></div>'; }
           html += '</div>';
           contentEl.innerHTML = html;
@@ -2003,6 +2331,11 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
         /**
          * 追加更多数据到现有列表（懒加载）
+         *
+         * 修改日期：2026-05-02
+         * 修改人：qiweizhe
+         * 修改目的：新增 followsVideos 和 followsLive 视图的追加数据支持
+         *
          * @param {string} view - 视图类型
          * @param {Array} data - 新数据数组
          */
@@ -2017,10 +2350,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           let html = '';
           switch (view) {
             case 'recommendedVideos':
+            case 'followsVideos':
             case 'favorites':
               html = buildVideoCards(data);
               break;
             case 'recommendedLives':
+            case 'followsLive':
               html = buildLiveCards(data);
               break;
             case 'follows':
@@ -2038,9 +2373,20 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           }
         }
 
+        /**
+         * 高亮当前 Tab 按钮
+         *
+         * 修改日期：2026-05-02
+         * 修改人：qiweizhe
+         * 修改目的：支持子视图高亮逻辑，followsVideos 和 followsLive 视图高亮"我的关注"主Tab
+         *
+         * @param {string} view - 视图类型
+         */
         function highlightTab(view) {
+          // 如果是关注子视图，高亮"我的关注"主Tab
+          const mainView = (view === 'followsVideos' || view === 'followsLive') ? 'follows' : view;
           tabBar.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.view === view);
+            btn.classList.toggle('active', btn.dataset.view === mainView);
           });
         }
 
