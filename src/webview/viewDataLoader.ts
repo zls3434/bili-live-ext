@@ -123,9 +123,7 @@ export class ViewDataLoader {
 
     try {
       const feedResult = await this.apiService.getFollowFeedVideos(state.feedOffset || '');
-      const videos = feedResult.videos;
-
-      videos.sort((a, b) => (b.pubdate || 0) - (a.pubdate || 0));
+      const videos = [...feedResult.videos].sort((a, b) => (b.pubdate || 0) - (a.pubdate || 0));
 
       logger.info(`关注动态: 获取 ${videos.length} 条视频, hasMore=${feedResult.hasMore}`);
 
