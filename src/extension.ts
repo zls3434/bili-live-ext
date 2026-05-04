@@ -12,9 +12,9 @@
  * 在项目中的角色：
  * 该文件是整个 VSCode 扩展的启动入口，负责将所有模块串联起来
  *
- * @author qiweizhe
+ * @author zls3434
  * @date 2026-04-30
- * @modification 2026-04-30 qiweizhe 初始化全局日志管理器，替代独立的输出通道
+ * @modification 2026-04-30 zls3434 初始化全局日志管理器，替代独立的输出通道
  */
 
 import * as vscode from 'vscode';

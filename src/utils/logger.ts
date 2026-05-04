@@ -11,9 +11,9 @@
  * 作为插件的统一日志入口，所有模块通过此 logger 记录日志，
  * 确保日志在 VSCode 输出面板中可见
  *
- * @author qiweizhe
+ * @author zls3434
  * @date 2026-04-30
- * @modification 2026-04-30 qiweizhe 创建全局日志管理器
+ * @modification 2026-04-30 zls3434 创建全局日志管理器
  */
 
 import { OutputChannelManager } from './outputChannelManager';

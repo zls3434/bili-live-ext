@@ -13,11 +13,11 @@
  * 解决 VSCode WebView 中直接请求 B站 CDN 返回 403 的问题，
  * 因为 WebView 发出的请求 Referer 不是 bilibili.com
  *
- * @author qiweizhe
+ * @author zls3434
  * @date 2026-04-30
- * @modification 2026-04-30 qiweizhe 创建本地代理服务器，解决 403 防盗链问题
- * @modification 2026-04-30 qiweizhe 修复 http.request 无法请求 HTTPS URL 的问题
- * @modification 2026-04-30 qiweizhe 添加自动跟随重定向，解决直播流 302 重定向问题
+ * @modification 2026-04-30 zls3434 创建本地代理服务器，解决 403 防盗链问题
+ * @modification 2026-04-30 zls3434 修复 http.request 无法请求 HTTPS URL 的问题
+ * @modification 2026-04-30 zls3434 添加自动跟随重定向，解决直播流 302 重定向问题
  */
 
 import * as http from 'http';

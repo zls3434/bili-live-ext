@@ -12,10 +12,10 @@
  * 为插件提供结构化日志和弹幕展示的输出能力，
  * 所有需要展示在输出面板中的内容都通过此类统一管理
  *
- * @author qiweizhe
+ * @author zls3434
  * @date 2026-04-30
- * @modification 2026-04-30 qiweizhe 创建输出通道管理器，实现弹幕输出通道的创建和管理
- * @modification 2026-04-30 qiweizhe 添加通用日志通道，将所有 console 日志统一输出到 bilibili 通道
+ * @modification 2026-04-30 zls3434 创建输出通道管理器，实现弹幕输出通道的创建和管理
+ * @modification 2026-04-30 zls3434 添加通用日志通道，将所有 console 日志统一输出到 bilibili 通道
  */
 
 import * as vscode from 'vscode';

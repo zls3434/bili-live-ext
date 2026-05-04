@@ -50,6 +50,8 @@ export interface VideoInfo {
   playCount: number;
   /** 弹幕数量 */
   danmakuCount: number;
+  /** 视频发布时间戳（秒），用于排序 */
+  pubdate?: number;
 }
 
 /**
@@ -90,7 +92,7 @@ export interface FollowGroup {
  *
  * 定义扩展中可以切换展示的内容类型视图
  * 修改日期：2026-05-02
- * 修改人：qiweizhe
+ * 修改人：zls3434
  * 修改目的：新增 followsVideos（关注动态）和 followsLive（关注直播中）两个子视图，
  *          用于在"我的关注"视图下提供子 Tab 切换功能
  */

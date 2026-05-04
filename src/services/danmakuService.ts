@@ -17,10 +17,10 @@
  * - ProtoVer: 0=纯JSON, 1=心跳人气值, 2=zlib压缩, 3=brotli压缩
  * - Operation: 2=心跳请求, 3=心跳回复(人气值), 5=弹幕消息, 7=认证请求, 8=认证成功
  *
- * @author qiweizhe
+ * @author zls3434
  * @date 2026-04-30
- * @modification 2026-04-30 qiweizhe 创建弹幕解析服务
- * @modification 2026-04-30 qiweizhe 修复弹幕连接：添加心跳包、zlib解压缩、使用API返回的服务器地址
+ * @modification 2026-04-30 zls3434 创建弹幕解析服务
+ * @modification 2026-04-30 zls3434 修复弹幕连接：添加心跳包、zlib解压缩、使用API返回的服务器地址
  */
 
 import WebSocket from 'ws';

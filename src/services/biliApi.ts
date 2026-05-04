@@ -213,10 +213,82 @@ export class BiliApiService {
         duration: this._parseDuration(item.length as string),
         playCount: item.play as number,
         danmakuCount: item.video_review as number,
+        pubdate: item.created as number,
       }));
     } catch (error) {
       logger.error(`getUserVideos 请求失败: ${error}`);
       return [];
+    }
+  }
+
+  async getFollowFeedVideos(
+    offset: string = ''
+  ): Promise<{ videos: VideoInfo[]; offset: string; hasMore: boolean }> {
+    try {
+      const params: Record<string, string | number> = {
+        type: 'video',
+        offset,
+      };
+
+      const response = await this.axiosInstance.get(
+        'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all',
+        { params }
+      );
+
+      const { code, data, message } = response.data;
+      if (code !== 0) {
+        logger.warn(`getFollowFeedVideos 返回错误: code=${code}, message=${message}`);
+        return { videos: [], offset: '', hasMore: false };
+      }
+
+      const items = data?.items || [];
+      const videos: VideoInfo[] = [];
+
+      for (const item of items) {
+        const type = item.type as string;
+        if (type !== 'DYNAMIC_TYPE_AV') { continue; }
+
+        const modules = item.modules as Record<string, unknown> || {};
+        const moduleDynamic = modules.module_dynamic as Record<string, unknown> || {};
+        const moduleAuthor = modules.module_author as Record<string, unknown> || {};
+        const major = moduleDynamic.major as Record<string, unknown> || {};
+        const archive = major.archive as Record<string, unknown> || {};
+
+        const bvid = archive.bvid as string;
+        const title = archive.title as string;
+        const cover = archive.cover as string;
+        const archiveAuthor = archive.author as string;
+        const moduleAuthorName = moduleAuthor.name as string;
+        const author = archiveAuthor || moduleAuthorName || '';
+        const durationText = archive.duration_text as string || '';
+        const archiveStat = (archive.stat as Record<string, unknown>) || {};
+        const playCount = (archiveStat.play as number) || 0;
+        const danmakuCount = (archiveStat.danmaku as number) || 0;
+        const pubTs = (archive.pub_ts as number) || (moduleAuthor.pub_ts as number) || 0;
+
+        if (!bvid || !title) { continue; }
+
+        videos.push({
+          bvid,
+          title,
+          cover: cover ? cover.replace(/^\/\//, 'https://') : '',
+          author: author || '',
+          duration: this._parseDuration(durationText),
+          playCount,
+          danmakuCount,
+          pubdate: pubTs,
+        });
+      }
+
+      const nextOffset = data?.offset || '';
+      const hasMore = data?.has_more === true;
+
+      logger.info(`动态Feed: 获取 ${videos.length} 条视频, hasMore=${hasMore}, offset=${String(nextOffset).substring(0, 20)}`);
+
+      return { videos, offset: String(nextOffset), hasMore };
+    } catch (error) {
+      logger.error(`getFollowFeedVideos 请求失败: ${error}`);
+      return { videos: [], offset: '', hasMore: false };
     }
   }
 
@@ -353,6 +425,7 @@ export class BiliApiService {
         duration: item.duration as number,
         playCount: (item.stat as Record<string, unknown>)?.view as number || 0,
         danmakuCount: (item.stat as Record<string, unknown>)?.danmaku as number || 0,
+        pubdate: (item.pubdate as number) || 0,
       }));
       // 推荐视频无限滚动，始终有更多
       return { list, hasMore: true };
