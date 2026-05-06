@@ -127,6 +127,12 @@ export class BiliApiService {
     });
 
     // 请求拦截器：自动注入 Cookie（含 buvid 设备指纹）
+    //
+    // 修改日期：2026-05-05
+    // 修改人：zls3434
+    // 修改目的：统一直播 API 请求的 Cookie 构建逻辑，消除 isLiveApi 分支内
+    //          buvid3 有/无两种情况的重复 Cookie 设置代码，改为使用 cookies 数组
+    //          统一构建后 join，逻辑更简洁、更易维护
     this.axiosInstance.interceptors.request.use(async (config) => {
       const cookie = await this.sessionManager.getSession();
 
@@ -144,16 +150,19 @@ export class BiliApiService {
         // Origin 和 Referer 是B站风控校验的重要检查项
         config.headers['Referer'] = LIVE_REFERER;
         config.headers['Origin'] = 'https://live.bilibili.com';
+
+        /* 统一构建 Cookie：将 buvid 设备指纹和用户登录态合并到一个数组中，避免重复的 if/else 判断 */
+        const cookies: string[] = [];
         if (this.buvid3) {
-          const buvidCookie = `buvid3=${this.buvid3}; buvid4=${this.buvid4}`;
-          config.headers['Cookie'] = cookie
-            ? `${cookie}; ${buvidCookie}`
-            : buvidCookie;
-          logger.info(`直播API请求 Cookie 注入完成: buvid3=${this.buvid3.substring(0, 15)}..., 用户Cookie=${cookie ? '有' : '无'}`);
-        } else if (cookie) {
-          config.headers['Cookie'] = cookie;
-          logger.info(`直播API请求 Cookie: buvid3不可用, 用户Cookie=${cookie ? '有' : '无'}`);
+          cookies.push(`buvid3=${this.buvid3}`, `buvid4=${this.buvid4}`);
         }
+        if (cookie) {
+          cookies.push(cookie);
+        }
+        if (cookies.length > 0) {
+          config.headers['Cookie'] = cookies.join('; ');
+        }
+        logger.info(`直播API请求 Cookie 注入完成: buvid3=${this.buvid3 ? this.buvid3.substring(0, 15) + '...' : '无'}, 用户Cookie=${cookie ? '有' : '无'}`);
       } else {
         if (cookie) {
           config.headers['Cookie'] = cookie;
@@ -435,7 +444,8 @@ export class BiliApiService {
        * - Referer/Origin：设置直播站来源
        */
       /* 构建 PHP 数组参数格式：uids[]=1&uids[]=2&uids[]=3&... */
-      const body = mids.map(mid => `uids[]=${mid}`).join('&');
+      /* 对 mid 值进行 URL 编码，防御性编程，防止特殊字符导致请求异常 */
+      const body = mids.map(mid => `uids[]=${encodeURIComponent(mid)}`).join('&');
       const response = await axios.post(
         'https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids',
         body,
