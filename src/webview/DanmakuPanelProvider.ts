@@ -129,8 +129,12 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
       async (message: Record<string, unknown>) => {
         switch (message.type) {
           case 'sendDanmaku': {
-            // 前端请求发送弹幕
-            await this._handleSendDanmaku(message.text as string);
+            // 前端请求发送弹幕，验证参数类型和非空
+            if (typeof message.text !== 'string' || !message.text.trim()) {
+              logger.warn('弹幕发送请求参数无效');
+              break;
+            }
+            await this._handleSendDanmaku(message.text);
             break;
           }
           default:
