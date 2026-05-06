@@ -6,6 +6,7 @@
  * - 提供全局的日志输出接口，替代 console.log/warn/error
  * - 日志同时输出到 VSCode 输出通道（bilibili）和控制台
  * - 非 VSCode 环境下自动降级为纯 console 输出
+ * - 日志输出格式包含毫秒级时间戳，便于精确定位事件时序
  *
  * 在项目中的角色：
  * 作为插件的统一日志入口，所有模块通过此 logger 记录日志，
@@ -14,9 +15,11 @@
  * @author zls3434
  * @date 2026-04-30
  * @modification 2026-04-30 zls3434 创建全局日志管理器
+ * @modification 2026-05-06 zls3434 优化日志输出格式，降级模式下也增加毫秒级时间戳
  */
 
 import { OutputChannelManager } from './outputChannelManager';
+import { formatTimestamp } from './outputChannelManager';
 
 /**
  * 全局日志管理器
@@ -52,6 +55,9 @@ class Logger {
   /**
    * 输出信息级别日志
    *
+   * 若 OutputChannelManager 已初始化，则通过 VSCode 输出通道输出（含时间戳）；
+   * 否则降级为 console.log 输出，同样包含毫秒级时间戳
+   *
    * @param {string} message - 日志消息
    * @returns {void}
    */
@@ -59,12 +65,16 @@ class Logger {
     if (this.channelManager) {
       this.channelManager.info(message);
     } else {
-      console.log(`[bilibili] ${message}`);
+      const timestamp = formatTimestamp();
+      console.log(`[bilibili] [${timestamp}] [INFO] ${message}`);
     }
   }
 
   /**
    * 输出警告级别日志
+   *
+   * 若 OutputChannelManager 已初始化，则通过 VSCode 输出通道输出（含时间戳）；
+   * 否则降级为 console.warn 输出，同样包含毫秒级时间戳
    *
    * @param {string} message - 警告消息
    * @returns {void}
@@ -73,12 +83,16 @@ class Logger {
     if (this.channelManager) {
       this.channelManager.warn(message);
     } else {
-      console.warn(`[bilibili] ${message}`);
+      const timestamp = formatTimestamp();
+      console.warn(`[bilibili] [${timestamp}] [WARN] ${message}`);
     }
   }
 
   /**
    * 输出错误级别日志
+   *
+   * 若 OutputChannelManager 已初始化，则通过 VSCode 输出通道输出（含时间戳）；
+   * 否则降级为 console.error 输出，同样包含毫秒级时间戳
    *
    * @param {string} message - 错误消息
    * @returns {void}
@@ -87,7 +101,8 @@ class Logger {
     if (this.channelManager) {
       this.channelManager.error(message);
     } else {
-      console.error(`[bilibili] ${message}`);
+      const timestamp = formatTimestamp();
+      console.error(`[bilibili] [${timestamp}] [ERROR] ${message}`);
     }
   }
 }

@@ -2,7 +2,7 @@
   "name": "bili-live-ext",
   "displayName": "bilibili",
   "description": "在 VSCode 中浏览 B站（bilibili）直播和视频",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "zls3434",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -17,10 +17,20 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:bilibili-main-view"
+    "onView:bilibili-main-view",
+    "onView:bilibili-danmaku-panel"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "bilibili-panel",
+          "title": "弹幕",
+          "icon": "media/icon.png"
+        }
+      ]
+    },
     "views": {
       "explorer": [
         {
@@ -28,6 +38,13 @@
           "name": "bilibili",
           "type": "webview",
           "icon": "media/icon.png"
+        }
+      ],
+      "bilibili-panel": [
+        {
+          "id": "bilibili-danmaku-panel",
+          "name": "弹幕",
+          "type": "webview"
         }
       ]
     },

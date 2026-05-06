@@ -16,6 +16,7 @@
  * 【收藏模块】getFavorites / getFavoriteVideos
  * 【推荐模块】getRecommendedVideos / getRecommendedLives / getLiveRoomList
  * 【视频模块】getVideoInfo / getVideoPlayUrl / getVideoDanmaku (XML格式)
+ * 【弹幕发送模块】sendLiveDanmaku / sendVideoDanmaku
  * 【直播模块】getLiveRoomInfo / getLivePlayUrl / getLiveDanmakuInfo
  * 【用户模块】getMyInfo / getMyMid
  *
@@ -32,6 +33,10 @@
  *           和 getAllFollowings 自动分页获取全部关注方法，修复关注直播中列表的两个 Bug：
  *           - 主播名显示"未知主播"：getRoomInfoOld API 不返回 uname 字段，改用 get_status_info_by_uids
  *           - 直播列表不完整：getMyFollowing 只获取前50个关注，改用自动分页获取全部
+ * @modification 2026-05-06 zls3434 新增弹幕发送模块：sendLiveDanmaku（直播弹幕发送）
+ *           和 sendVideoDanmaku（视频弹幕发送）两个 API 方法；
+ *           修复 csrf 校验失败（code=-111）问题：添加 _getCsrfToken 方法从 Cookie 中
+ *           提取 bili_jct，在弹幕发送请求中附带 csrf / csrf_token / ts 参数
  */
 
 import axios, { AxiosInstance } from 'axios';
@@ -217,12 +222,16 @@ export class BiliApiService {
   /**
    * 获取当前用户的关注列表（带分页）
    *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：返回值增加 total 字段，供 getAllFollowings 并发分页优化使用
+   *
    * @param {number} vmid - 用户 UID
    * @param {number} [pn=1] - 页码，从 1 开始
    * @param {number} [ps=20] - 每页数量，默认 20
-   * @returns {Promise<{ list: RawFollowInfo[]; hasMore: boolean }>}
+   * @returns {Promise<{ list: RawFollowInfo[]; hasMore: boolean; total: number }>}
    */
-  async getMyFollowing(vmid: number, pn: number = 1, ps: number = 20): Promise<{ list: RawFollowInfo[]; hasMore: boolean }> {
+  async getMyFollowing(vmid: number, pn: number = 1, ps: number = 20): Promise<{ list: RawFollowInfo[]; hasMore: boolean; total: number }> {
     const response = await this.axiosInstance.get('https://api.bilibili.com/x/relation/followings', {
       params: { vmid, pn, ps, order: 'desc' },
     });
@@ -236,7 +245,7 @@ export class BiliApiService {
     const list: RawFollowInfo[] = data?.list || [];
     const hasMore = (pn * ps) < total;
 
-    return { list, hasMore };
+    return { list, hasMore, total };
   }
 
   /**
@@ -492,36 +501,50 @@ export class BiliApiService {
   }
 
   /**
-   * 获取全部关注列表（自动分页）
+   * 获取全部关注列表（自动分页，并发优化）
    *
    * 修改日期：2026-05-05
    * 修改人：zls3434
    * 修改目的：原 getMyFollowing 只获取单页数据，关注数超过50时会遗漏正在直播的UP主；
    *          新增此方法自动循环分页获取全部关注的UP主列表
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：性能优化——将串行分页改为并发分页。
+   *          原实现逐页串行请求（678关注需14次串行请求，约2秒），
+   *          改为先请求第1页获取总数，然后并发请求所有剩余页（14次并发≈1次耗时），
+   *          整体耗时从 O(n) 降到 O(1) 级别
    *
    * @param {number} vmid - 用户 UID
    * @param {number} [ps=50] - 每页数量，默认 50
    * @returns {Promise<RawFollowInfo[]>} 全部关注的UP主列表
    */
   async getAllFollowings(vmid: number, ps: number = 50): Promise<RawFollowInfo[]> {
-    const allFollows: RawFollowInfo[] = [];
-    let pn = 1;
-    let hasMore = true;
+    /* 第1步：先请求第1页，获取关注列表数据和总数 */
+    const firstResult = await this.getMyFollowing(vmid, 1, ps);
+    const allFollows: RawFollowInfo[] = [...firstResult.list];
 
-    while (hasMore) {
-      const result = await this.getMyFollowing(vmid, pn, ps);
-      allFollows.push(...result.list);
-      hasMore = result.hasMore;
-      pn++;
-
-      /* 安全限制：防止关注数极端大的用户导致请求过多，最多获取 2500 个关注（50页×50个） */
-      if (pn > 50) {
-        logger.warn(`getAllFollowings 已达到最大分页限制(50页)，可能未获取全部关注`);
-        break;
-      }
+    /* 只有一页或不足一页时，无需再请求 */
+    if (!firstResult.hasMore) {
+      logger.info(`getAllFollowings 共获取 ${allFollows.length} 个关注`);
+      return allFollows;
     }
 
-    logger.info(`getAllFollowings 共获取 ${allFollows.length} 个关注`);
+    /* 第2步：根据总数计算总页数，然后并发请求第2页到最后一页 */
+    const totalPages = Math.ceil(firstResult.total / ps);
+    const maxPages = Math.min(totalPages, 50);
+
+    const pagePromises: Promise<{ list: RawFollowInfo[]; hasMore: boolean }>[] = [];
+    for (let pn = 2; pn <= maxPages; pn++) {
+      pagePromises.push(this.getMyFollowing(vmid, pn, ps));
+    }
+
+    /* 并行等待所有分页请求完成 */
+    const results = await Promise.all(pagePromises);
+    for (const result of results) {
+      allFollows.push(...result.list);
+    }
+
+    logger.info(`getAllFollowings 共获取 ${allFollows.length} 个关注（并发${maxPages - 1}页）`);
     return allFollows;
   }
 
@@ -919,6 +942,191 @@ export class BiliApiService {
       return response.data;
     } catch {
       return '';
+    }
+  }
+
+  // ==================== 弹幕发送模块 ====================
+
+  /**
+   * 从 Cookie 中提取 CSRF token（bili_jct 字段的值）
+   *
+   * B站的 POST 写操作接口要求在请求参数中传递 csrf / csrf_token 参数，
+   * 其值等于用户 Cookie 中 bili_jct 字段的值。
+   * 如果 Cookie 中没有 bili_jct 字段，则返回空字符串，表示无法通过 CSRF 校验。
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：修复弹幕发送返回 -111（csrf 校验失败）的问题，
+   *          B站 POST 写操作接口需要在请求体中附带 csrf 和 csrf_token 参数
+   *
+   * @returns {Promise<string>} CSRF token 值，未找到时返回空字符串
+   */
+  private async _getCsrfToken(): Promise<string> {
+    const cookie = await this.sessionManager.getSession();
+    if (!cookie) {
+      return '';
+    }
+    // 从 Cookie 字符串中查找 bili_jct 的值
+    // Cookie 格式示例：key1=val1; bili_jct=xxxxxxxx; key3=val3
+    const match = cookie.match(/bili_jct=([a-f0-9]+)/);
+    return match ? match[1] : '';
+  }
+
+  /**
+   * 发送直播弹幕到B站直播间
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：新增直播弹幕发送功能，支持向指定直播间发送文本弹幕；
+   *          同日修复 csrf 校验失败问题：添加 csrf / csrf_token / ts 参数
+   *
+   * 调用 B站直播弹幕发送接口（POST https://api.live.bilibili.com/msg/send），
+   * 向指定直播间发送一条文本弹幕。该接口需要用户登录态（Cookie）、
+   * CSRF token（bili_jct）和正确的 Referer 头（https://live.bilibili.com/）。
+   *
+   * 请求参数说明：
+   * - roomid: 直播间房间号
+   * - msg: 弹幕文本内容
+   * - rnd: 当前 Unix 秒时间戳（B站要求此参数为时间戳，非随机数）
+   * - fontsize: 弹幕字号，固定为 25
+   * - color: 弹幕颜色（十进制），16777215 = 白色（#FFFFFF）
+   * - mode: 弹幕模式，固定为 1（从右向左滚动）
+   * - csrf: CSRF 令牌（Cookie 中 bili_jct 字段的值）
+   * - csrf_token: CSRF 令牌（同 csrf，部分接口兼容字段）
+   *
+   * 请求头说明：
+   * - Cookie: 通过 sessionManager.getSession() 获取，拦截器会自动注入
+   * - Referer: 设置为 https://live.bilibili.com/，模拟浏览器从直播间页面发送弹幕
+   * - User-Agent: 拦截器默认注入
+   *
+   * 响应处理：
+   * - code === 0：弹幕发送成功
+   * - code === -111：CSRF 校验失败（Cookie 中缺少 bili_jct）
+   * - 其他 code：发送失败（可能原因：未登录、弹幕过长、房间号无效、发送频率限制等）
+   *
+   * @param {number} roomId - 直播间房间号
+   * @param {string} msg - 弹幕文本内容
+   * @returns {Promise<boolean>} 发送成功返回 true，失败返回 false
+   */
+  async sendLiveDanmaku(roomId: number, msg: string): Promise<boolean> {
+    try {
+      const csrf = await this._getCsrfToken();
+      const response = await this.axiosInstance.post(
+        'https://api.live.bilibili.com/msg/send',
+        new URLSearchParams({
+          roomid: String(roomId),
+          msg: msg,
+          rnd: String(Math.floor(Date.now() / 1000)),
+          fontsize: '25',
+          color: '16777215',
+          mode: '1',
+          csrf: csrf,
+          csrf_token: csrf,
+        }),
+        {
+          headers: {
+            'Referer': 'https://live.bilibili.com/',
+          },
+        }
+      );
+
+      const { code, message } = response.data;
+      if (code === 0) {
+        logger.info(`直播弹幕发送成功: roomId=${roomId}, msg="${msg}"`);
+        return true;
+      }
+      logger.warn(`直播弹幕发送失败: roomId=${roomId}, code=${code}, message=${message}`);
+      return false;
+    } catch (error) {
+      logger.error(`直播弹幕发送请求异常: roomId=${roomId}, error=${error}`);
+      return false;
+    }
+  }
+
+  /**
+   * 发送视频弹幕到B站视频
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：新增视频弹幕发送功能，支持向指定视频发送滚动弹幕；
+   *          同日修复 csrf 校验失败问题：添加 csrf / csrf_token 参数
+   *
+   * 调用 B站视频弹幕发送接口（POST https://api.bilibili.com/x/v2/dm/post），
+   * 向指定视频的指定时间点发送一条滚动弹幕。该接口需要用户登录态（Cookie）、
+   * CSRF token（bili_jct）和正确的 Referer 头（https://www.bilibili.com/）。
+   *
+   * 请求参数说明（application/x-www-form-urlencoded 格式）：
+   * - type: 弹幕类型，固定为 1（滚动弹幕）
+   * - oid: 视频 cid（弹幕所属资源 ID）
+   * - msg: 弹幕文本内容
+   * - progress: 视频播放进度（整数，单位：毫秒）。注意：B站 API 的 progress 参数
+   *   实际接受毫秒值，但用户输入通常为秒数，因此需要在发送时乘以 1000 转换
+   * - color: 弹幕颜色值（十进制），16777215 = 白色（#FFFFFF）
+   * - fontsize: 弹幕字号，固定为 25
+   * - pool: 弹幕池，固定为 0（普通弹幕池）
+   * - mode: 弹幕模式，固定为 1（从右向左滚动）
+   * - rnd: 随机数，用于防止请求缓存
+   * - bvid: 视频 BV 号
+   * - csrf: CSRF 令牌（Cookie 中 bili_jct 字段的值）
+   * - csrf_token: CSRF 令牌（同 csrf，部分接口兼容字段）
+   *
+   * 请求头说明：
+   * - Cookie: 通过 sessionManager.getSession() 获取，拦截器自动注入
+   * - Content-Type: application/x-www-form-urlencoded（表单编码格式）
+   * - Referer: 设置为 https://www.bilibili.com/，模拟浏览器从视频页面发送弹幕
+   * - User-Agent: 拦截器默认注入
+   *
+   * 响应处理：
+   * - code === 0：弹幕发送成功
+   * - 其他 code：发送失败（可能原因：未登录、视频不存在、弹幕过长、发送频率限制等）
+   *
+   * @param {number} oid - 视频 cid（弹幕所属资源 ID）
+   * @param {string} msg - 弹幕文本内容
+   * @param {number} progress - 视频播放进度（整数秒），方法内部会转换为毫秒
+   * @param {string} bvid - 视频 BV 号
+   * @returns {Promise<boolean>} 发送成功返回 true，失败返回 false
+   */
+  async sendVideoDanmaku(oid: number, msg: string, progress: number, bvid: string): Promise<boolean> {
+    try {
+      const csrf = await this._getCsrfToken();
+      /* 构建 form-urlencoded 格式的请求体 */
+      /* progress 参数：B站 API 要求毫秒值，用户传入的秒数需乘以 1000 */
+      const params = new URLSearchParams({
+        type: '1',
+        oid: String(oid),
+        msg: msg,
+        progress: String(Math.floor(progress * 1000)),
+        color: '16777215',
+        fontsize: '25',
+        pool: '0',
+        mode: '1',
+        rnd: String(Math.floor(Math.random() * 1e8)),
+        bvid: bvid,
+        csrf: csrf,
+        csrf_token: csrf,
+      });
+
+      const response = await this.axiosInstance.post(
+        'https://api.bilibili.com/x/v2/dm/post',
+        params,
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Referer': 'https://www.bilibili.com/',
+          },
+        }
+      );
+
+      const { code, message } = response.data;
+      if (code === 0) {
+        logger.info(`视频弹幕发送成功: bvid=${bvid}, oid=${oid}, progress=${progress}s, msg="${msg}"`);
+        return true;
+      }
+      logger.warn(`视频弹幕发送失败: bvid=${bvid}, code=${code}, message=${message}`);
+      return false;
+    } catch (error) {
+      logger.error(`视频弹幕发送请求异常: bvid=${bvid}, oid=${oid}, error=${error}`);
+      return false;
     }
   }
 

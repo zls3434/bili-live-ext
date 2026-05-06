@@ -18,6 +18,7 @@
  * @modification 2026-04-30 zls3434 重写主视图提供者，实现完整侧边栏容器（Tab切换/列表播放器切换/登录区/消息通信）
  * @modification 2026-05-04 zls3434 重构：将弹幕追踪逻辑提取到 VideoDanmakuTracker，
  *               将数据加载逻辑提取到 ViewDataLoader，减少 BiliMainViewProvider 的职责
+ * @modification 2026-05-06 zls3434 重构弹幕输出：从 OutputChannel 改为使用独立弹幕面板 DanmakuPanelProvider
  */
 
 import * as vscode from 'vscode';
@@ -34,6 +35,7 @@ import { logger } from '../utils/logger';
 import * as QRCode from 'qrcode';
 import { VideoDanmakuTracker } from './videoDanmakuTracker';
 import { ViewDataLoader } from './viewDataLoader';
+import { DanmakuPanelProvider } from './DanmakuPanelProvider';
 import { getWebviewHtml } from './htmlTemplate';
 
 /**
@@ -44,6 +46,7 @@ import { getWebviewHtml } from './htmlTemplate';
  * - 处理来自 Webview 的用户操作消息（Tab切换、点击视频/直播、返回、登录）
  * - 协调各业务服务完成登录、数据获取、播放等功能
  * - 维护当前视图状态和导航历史
+ * - 管理 DanmakuPanelProvider 实例，用于弹幕面板的激活/停用和弹幕推送
  */
 export class BiliMainViewProvider implements vscode.WebviewViewProvider {
   /** 当前 Webview 视图实例，null 表示尚未创建 */
@@ -108,8 +111,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
   /** 弹幕服务实例，解析和格式化弹幕数据 */
   private readonly danmakuService: DanmakuService;
 
-  /** 输出通道管理器单例，管理弹幕输出通道 */
-  private readonly outputChannelManager: OutputChannelManager;
+  /** 弹幕面板提供者实例，用于向独立弹幕面板推送弹幕和激活面板 */
+  private _danmakuPanel: DanmakuPanelProvider | null = null;
 
   /** 视频弹幕进度追踪器 */
   private _danmakuTracker: VideoDanmakuTracker;
@@ -141,12 +144,14 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     this.loginService = new BiliLoginService();
     this.apiService = new BiliApiService(this.sessionManager);
     this.danmakuService = new DanmakuService();
-    this.outputChannelManager = OutputChannelManager.getInstance();
-    this._danmakuTracker = new VideoDanmakuTracker(this.danmakuService, this.outputChannelManager, this.apiService);
+    // 注意：VideoDanmakuTracker 构造函数使用 DanmakuPanelProvider 替代了 OutputChannelManager
+    // 弹幕输出已迁移至独立弹幕面板，此处暂留 OutputChannelManager.getInstance() 仅供 ViewDataLoader 使用
+    const outputChannelManager = OutputChannelManager.getInstance();
+    this._danmakuTracker = new VideoDanmakuTracker(this.danmakuService, this.apiService);
     this._viewDataLoader = new ViewDataLoader({
       apiService: this.apiService,
       danmakuService: this.danmakuService,
-      outputChannelManager: this.outputChannelManager,
+      outputChannelManager: outputChannelManager,
       postMessage: (msg) => this._postMessage(msg),
       pageState: this._pageState,
       viewHasData: this._viewHasData,
@@ -190,6 +195,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
          *       因此需要在此处主动推送登录状态，确保 UI 与后端状态一致。
          */
         this._postMessage({ type: 'updateLoginStatus', loggedIn: true });
+        // 同步登录状态到弹幕面板
+        this._danmakuPanel?.updateLoginStatus(true);
       } else {
         /**
          * 修复：Cookie 无效时主动通知 Webview 更新 UI 为未登录状态
@@ -201,6 +208,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
          */
         await this.sessionManager.clearSession();
         this._postMessage({ type: 'updateLoginStatus', loggedIn: false });
+        // 同步登录状态到弹幕面板
+        this._danmakuPanel?.updateLoginStatus(false);
       }
     }
   }
@@ -218,6 +227,56 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
   }
 
   // ==================== 公开方法（供 extension.ts 命令调用） ====================
+
+  /**
+   * 注入弹幕面板提供者实例
+   *
+   * 由于 DanmakuPanelProvider 在 extension.ts 中独立注册，
+   * 需要通过此方法将实例注入到 BiliMainViewProvider 中，
+   * 以便在直播/视频播放时激活弹幕面板并推送弹幕数据。
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：新增方法，支持从 extension.ts 注入 DanmakuPanelProvider 实例
+   *
+   * @param {DanmakuPanelProvider} danmakuPanel - 弹幕面板提供者实例
+   * @returns {void}
+   */
+  public setDanmakuPanel(danmakuPanel: DanmakuPanelProvider): void {
+    this._danmakuPanel = danmakuPanel;
+    // 同步注入到 VideoDanmakuTracker，使其也能向弹幕面板推送弹幕
+    this._danmakuTracker.setDanmakuPanel(danmakuPanel);
+  }
+
+  /**
+   * 获取会话管理器实例
+   *
+   * 供外部模块（如 DanmakuPanelProvider）获取登录态 Cookie
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：新增方法，暴露 sessionManager 供 DanmakuPanelProvider 使用
+   *
+   * @returns {SessionManager} 会话管理器实例
+   */
+  public getSessionManager(): SessionManager {
+    return this.sessionManager;
+  }
+
+  /**
+   * 获取 B站 API 服务实例
+   *
+   * 供外部模块（如 DanmakuPanelProvider）调用 API 接口
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：新增方法，暴露 apiService 供 DanmakuPanelProvider 使用
+   *
+   * @returns {BiliApiService} B站 API 服务实例
+   */
+  public getApiService(): BiliApiService {
+    return this.apiService;
+  }
 
   /**
    * 初始化扫码登录流程
@@ -300,6 +359,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
                 type: 'updateLoginStatus',
                 loggedIn: true,
               });
+              // 同步登录状态到弹幕面板
+              this._danmakuPanel?.updateLoginStatus(true);
               // 通知 Webview 登录成功（导航到推荐视频）
               this._postMessage({
                 type: 'loginSuccess',
@@ -412,6 +473,9 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         bvid,
         cid,
       });
+
+      // 激活弹幕面板为视频模式（清空旧弹幕并更新面板标题）
+      this._danmakuPanel?.activateForVideo(bvid, cid);
 
       // 加载并输出视频弹幕，委托给 VideoDanmakuTracker
       const videoDuration = (videoInfo.duration as number) || 0;
@@ -581,9 +645,10 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               break;
             }
             case 'videoProgress': {
-              // 视频播放进度更新，推送对应时间的弹幕到 bilidm 通道
+              // 视频播放进度更新，推送对应时间的弹幕到弹幕面板，并同步播放时间到弹幕面板（用于发送视频弹幕时附带进度）
               const currentMs = message.currentMs as number;
               this._danmakuTracker.onVideoProgress(currentMs);
+              this._danmakuPanel?.setVideoProgress(currentMs);
               break;
             }
             case 'login': {
@@ -594,6 +659,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               await this.sessionManager.clearSession();
               this._loginStatus = { loggedIn: false, cookie: '', qrCodeUrl: '', qrCodeKey: '' };
               this._postMessage({ type: 'updateLoginStatus', loggedIn: false });
+              // 同步登录状态到弹幕面板
+              this._danmakuPanel?.updateLoginStatus(false);
               vscode.window.showInformationMessage('已退出B站登录');
               break;
             }
@@ -628,6 +695,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       webviewView.onDidChangeVisibility(() => {
         if (webviewView.visible) {
           this._postMessage({ type: 'updateLoginStatus', loggedIn: this._loginStatus.loggedIn });
+          // 同步登录状态到弹幕面板
+          this._danmakuPanel?.updateLoginStatus(this._loginStatus.loggedIn);
         }
       });
     }
@@ -766,7 +835,11 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    * 1. 从 B站 API 获取弹幕 WebSocket 连接参数（host、token）
    * 2. 建立 WebSocket 连接并发送认证包
    * 3. 接收实时弹幕数据并解析
-   * 4. 格式化后输出到「bilidm」输出通道
+   * 4. 将弹幕对象推送到独立弹幕面板进行渲染
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：将弹幕输出从 OutputChannel 改为使用 DanmakuPanelProvider
    *
    * @param {number} roomId - 直播间房间号
    * @returns {Promise<void>}
@@ -822,20 +895,20 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
       logger.info(`弹幕连接信息: host=${hostInfo?.host}, port=${hostInfo?.port}, token=${token ? '已获取' : '缺失'}`);
 
-      // 显示弹幕输出通道并清空旧内容
-      this.outputChannelManager.showDanmakuChannel(true);
-      this.outputChannelManager.clearDanmakuChannel();
+      // 激活弹幕面板为直播模式（清空旧弹幕并更新面板标题），替代原 outputChannelManager.showDanmakuChannel/clearDanmakuChannel
+      this._danmakuPanel?.activateForLive(roomId);
 
       // 获取当前登录用户的 UID（用于弹幕认证，真实 UID 避免弹幕用户名脱敏为 X***）
       const uid = await this.apiService.getMyMid() || 0;
 
       // 连接到直播弹幕 WebSocket 服务器（传入 API 返回的服务器地址和用户 UID）
+      // 弹幕回调：将 DanmakuItem 对象直接推送到弹幕面板，由面板负责格式化和渲染
       this.danmakuService.connectLiveDanmaku(
         roomId,
         token,
         (danmaku) => {
-          const text = this.danmakuService.formatDanmakuText(danmaku);
-          this.outputChannelManager.appendDanmaku(text);
+          // 直接传递 DanmakuItem 对象到弹幕面板，替代原来的格式化文本输出
+          this._danmakuPanel?.appendDanmaku(danmaku);
         },
         hostInfo,
         uid
@@ -858,6 +931,9 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    * 修改日期：2026-05-04
    * 修改人：zls3434
    * 修改目的：将视频弹幕清理逻辑委托给 VideoDanmakuTracker.clear() 方法
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：增加弹幕面板停用调用，替代原 outputChannelManager 弹幕通道清理
    *
    * @returns {void}
    */
@@ -865,6 +941,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     this.danmakuService.disconnectLiveDanmaku();
     // 清理视频弹幕队列（委托给 VideoDanmakuTracker）
     this._danmakuTracker.clear();
+    // 停用弹幕面板，清空面板状态和弹幕数据
+    this._danmakuPanel?.deactivate();
   }
 
   // _loadFollowsData、_loadFollowsVideosData、_loadFollowsLiveData、

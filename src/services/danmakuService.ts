@@ -21,6 +21,12 @@
  * @date 2026-04-30
  * @modification 2026-04-30 zls3434 创建弹幕解析服务
  * @modification 2026-04-30 zls3434 修复弹幕连接：添加心跳包、zlib解压缩、使用API返回的服务器地址
+ * @modification 2026-05-06 zls3434 修复退出直播间后弹幕连接未立即断开：
+ *           将 ws.close() 改为 ws.terminate() 立即断开
+ * @modification 2026-05-06 zls3434 支持 INTERACT_WORD_V2 消息的 protobuf 解析：
+ *           新增 _extractStringFromProtobuf 和 _extractVarintFromProtobuf 方法，
+ *           从 base64 编码的 protobuf 数据中提取用户名和交互类型，
+ *           实现进入直播间、关注主播、分享直播间三种交互消息的正确显示
  */
 
 import WebSocket from 'ws';
@@ -49,6 +55,14 @@ export interface DanmakuItem {
   type: number;
   /** 是否为直播弹幕 */
   isLive: boolean;
+  /**
+   * 是否为交互消息（入场/关注/分享等）
+   *
+   * 交互消息不进入弹幕列表，而是在弹幕面板底部的入场提示栏中显示
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   */
+  isInteract?: boolean;
 }
 
 /**
@@ -134,14 +148,23 @@ export class DanmakuService {
   /**
    * 断开直播弹幕 WebSocket 连接
    *
-   * 安全关闭连接、停止心跳包并清理回调引用
+   * 立即终止底层 socket 连接（使用 terminate 而非 close），
+   * 确保退出直播间后连接立即断开，而非等待心跳超时。
+   * 同时停止心跳包定时器并清理回调引用。
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：修复退出直播间后弹幕连接未立即断开的问题，
+   *          将 ws.close()（优雅关闭，等待握手）改为 ws.terminate()（立即断开）
    *
    * @returns {void}
    */
   public disconnectLiveDanmaku(): void {
     this._stopHeartbeat();
     if (this.ws) {
-      this.ws.close();
+      // 使用 terminate() 立即销毁底层 socket，不等待 WebSocket 关闭握手。
+      // close() 会发送关闭帧并等待服务器响应，如果服务器不响应则一直到心跳超时才断开
+      this.ws.terminate();
       this.ws = null;
     }
     this.onDanmakuCallback = null;
@@ -486,25 +509,54 @@ export class DanmakuService {
       }
 
       // 入场消息
+      // INTERACT_WORD：data 是普通 JSON 对象，可直接提取 uname
+      // INTERACT_WORD_V2：data.data 是 base64 编码的 protobuf，
+      //   需要解码后提取字段（uid=1, uname=2, msg_type=5）
       case 'INTERACT_WORD':
       case 'INTERACT_WORD_V2': {
         const data = body.data as Record<string, unknown>;
         if (data && this.onDanmakuCallback) {
-          const uname = data.uname as string || '';
-          if (uname) {
-            this.onDanmakuCallback({
-              username: uname,
-              text: `➡️ ${uname} 进入直播间`,
-              timestamp: Date.now(),
-              type: 0,
-              isLive: true,
-            });
+          if (baseCmd === 'INTERACT_WORD_V2') {
+            // INTERACT_WORD_V2：尝试从嵌套的 protobuf 数据中提取用户名
+            const pbBase64 = data.data as string || data.pb as string;
+            if (pbBase64) {
+              const uname = this._extractStringFromProtobuf(Buffer.from(pbBase64, 'base64'), 2);
+              const uid = this._extractVarintFromProtobuf(Buffer.from(pbBase64, 'base64'), 1);
+              // msg_type=1: 进入直播间, msg_type=2: 关注, msg_type=3: 分享
+              const msgType = this._extractVarintFromProtobuf(Buffer.from(pbBase64, 'base64'), 5);
+              if (uname) {
+                const actionText = msgType === 2 ? '关注了主播' : msgType === 3 ? '分享了直播间' : '进入直播间';
+                this.onDanmakuCallback({
+                  username: uname,
+                  text: `➡️ ${uname} ${actionText}`,
+                  timestamp: Date.now(),
+                  type: 0,
+                  isLive: true,
+                  isInteract: true,
+                });
+              } else {
+                logger.info(`INTERACT_WORD_V2 protobuf 解析: uid=${uid}, uname 为空 (可能未登录导致隐私屏蔽)`);
+              }
+            }
+          } else {
+            // INTERACT_WORD：data 是普通 JSON 对象，直接提取 uname
+            const uname = data.uname as string || '';
+            if (uname) {
+              this.onDanmakuCallback({
+                username: uname,
+                text: `➡️ ${uname} 进入直播间`,
+                timestamp: Date.now(),
+                type: 0,
+                isLive: true,
+                isInteract: true,
+              });
+            }
           }
         }
         break;
       }
 
-      // 关注
+      // 点赞（交互消息，显示在提示栏而非弹幕列表）
       case 'LIKE_CLICKV2': {
         const data = body.data as Record<string, unknown>;
         if (data && this.onDanmakuCallback) {
@@ -516,6 +568,7 @@ export class DanmakuService {
               timestamp: Date.now(),
               type: 0,
               isLive: true,
+              isInteract: true,
             });
           }
         }
@@ -523,6 +576,20 @@ export class DanmakuService {
       }
 
       // 以下消息类型不推送到弹幕通道，仅记录调试日志
+      // ENTRY_EFFECT: 进入房间特效（纯视觉效果，无文字信息）
+      // NOTICE_MSG: 系统通知（重复性高，价值低）
+      // WATCHED_CHANGE: 累计观看人数变化（纯数据更新）
+      // LIKE_INFO_V3_UPDATE: 点赞数更新（纯数据更新）
+      // LIKE_INFO_V3_CLICK: 单次点赞事件（高频低价值）
+      // DM_INTERACTION: 弹幕交互聚合（与弹幕列表无关）
+      // ROOM_REAL_TIME_MESSAGE_UPDATE: 直播间实时消息更新（标题/分区变更，信息价值低）
+      case 'ENTRY_EFFECT':
+      case 'NOTICE_MSG':
+      case 'WATCHED_CHANGE':
+      case 'LIKE_INFO_V3_UPDATE':
+      case 'LIKE_INFO_V3_CLICK':
+      case 'DM_INTERACTION':
+      case 'ROOM_REAL_TIME_MESSAGE_UPDATE':
       case 'ONLINE_RANK_COUNT':
       case 'ONLINE_RANK_V3':
       case 'POPULARITY_CHANGE':
@@ -627,5 +694,158 @@ export class DanmakuService {
     const min = Math.floor(totalSec / 60);
     const sec = totalSec % 60;
     return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  }
+
+  /**
+   * 从 Protobuf 二进制数据中提取指定字段号的 string 类型值
+   *
+   * 用于解析 INTERACT_WORD_V2 消息中 base64 编码的 protobuf 数据，
+   * 提取用户名（field=2）等字符串字段。
+   *
+   * Protobuf wire format：
+   * - 每个 field 以 tag 开头：tag = (field_number << 3) | wire_type
+   * - wire_type 0 = varint, wire_type 2 = length-delimited (string/bytes/embedded)
+   * - string 类型：tag 后跟 varint 长度 + UTF-8 字节
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：支持解析 INTERACT_WORD_V2 的 protobuf 编码数据
+   *
+   * @param {Buffer} buf - Protobuf 二进制数据
+   * @param {number} fieldNumber - 目标字段号（如 2=uname）
+   * @returns {string} 提取到的字符串值，未找到时返回空字符串
+   */
+  private _extractStringFromProtobuf(buf: Buffer, fieldNumber: number): string {
+    let offset = 0;
+    while (offset < buf.length) {
+      // 读取 tag（varint 编码）
+      const tagResult = this._readVarint(buf, offset);
+      if (!tagResult) { break; }
+      const tag = tagResult.value;
+      offset = tagResult.nextOffset;
+
+      const fieldNum = tag >>> 3; // tag >> 3 = field number
+      const wireType = tag & 0x07; // tag & 7 = wire type
+
+      if (fieldNum === fieldNumber && wireType === 2) {
+        // 找到目标字段，wire_type=2 表示 length-delimited（string）
+        const lenResult = this._readVarint(buf, offset);
+        if (!lenResult) { break; }
+        const strLen = lenResult.value;
+        offset = lenResult.nextOffset;
+        if (offset + strLen > buf.length) { break; }
+        return buf.subarray(offset, offset + strLen).toString('utf-8');
+      }
+
+      // 跳过非目标字段
+      offset = this._skipField(buf, offset, wireType);
+      if (offset < 0) { break; }
+    }
+    return '';
+  }
+
+  /**
+   * 从 Protobuf 二进制数据中提取指定字段号的 varint 值
+   *
+   * 用于解析 INTERACT_WORD_V2 消息中的 uid（field=1）、msg_type（field=5）等整数型字段。
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：支持解析 INTERACT_WORD_V2 的 protobuf 编码数据
+   *
+   * @param {Buffer} buf - Protobuf 二进制数据
+   * @param {number} fieldNumber - 目标字段号（如 1=uid, 5=msg_type）
+   * @returns {number} 提取到的整数值，未找到时返回 0
+   */
+  private _extractVarintFromProtobuf(buf: Buffer, fieldNumber: number): number {
+    let offset = 0;
+    while (offset < buf.length) {
+      const tagResult = this._readVarint(buf, offset);
+      if (!tagResult) { break; }
+      const tag = tagResult.value;
+      offset = tagResult.nextOffset;
+
+      const fieldNum = tag >>> 3;
+      const wireType = tag & 0x07;
+
+      if (fieldNum === fieldNumber && wireType === 0) {
+        // 找到目标字段，wire_type=0 表示 varint
+        const varintResult = this._readVarint(buf, offset);
+        if (!varintResult) { break; }
+        return varintResult.value;
+      }
+
+      offset = this._skipField(buf, offset, wireType);
+      if (offset < 0) { break; }
+    }
+    return 0;
+  }
+
+  /**
+   * 读取 Protobuf varint（可变长度整数编码）
+   *
+   * varint 编码规则：每个字节的最高位为继续标志位，
+   * 低 7 位为数据位，小端序拼接。
+   *
+   * @param {Buffer} buf - 数据缓冲区
+   * @param {number} offset - 起始偏移量
+   * @returns {{ value: number; nextOffset: number } | null} 解析结果或 null（数据不完整）
+   */
+  private _readVarint(buf: Buffer, offset: number): { value: number; nextOffset: number } | null {
+    let result = 0;
+    let shift = 0;
+    while (offset < buf.length) {
+      const byte = buf[offset];
+      result |= (byte & 0x7F) << shift;
+      offset++;
+      if ((byte & 0x80) === 0) {
+        return { value: result, nextOffset: offset };
+      }
+      shift += 7;
+      // varint 最多 10 个字节（64-bit），超过则数据异常
+      if (shift >= 64) { return null; }
+    }
+    return null;
+  }
+
+  /**
+   * 跳过 Protobuf 字段值
+   *
+   * 根据 wire type 跳过对应长度的数据，
+   * 返回下一个字段的起始偏移量。
+   *
+   * @param {Buffer} buf - 数据缓冲区
+   * @param {number} offset - 字段值的起始偏移量
+   * @param {number} wireType - wire type（0=varint, 1=64-bit, 2=length-delimited, 5=32-bit）
+   * @returns {number} 下一个字段的偏移量，-1 表示数据异常
+   */
+  private _skipField(buf: Buffer, offset: number, wireType: number): number {
+    switch (wireType) {
+      case 0: {
+        // varint：继续读取直到高位为 0
+        while (offset < buf.length) {
+          const byte = buf[offset];
+          offset++;
+          if ((byte & 0x80) === 0) { return offset; }
+        }
+        return -1;
+      }
+      case 1: {
+        // 64-bit fixed：8 字节
+        return offset + 8;
+      }
+      case 2: {
+        // length-delimited：varint 长度 + 对应字节数
+        const lenResult = this._readVarint(buf, offset);
+        if (!lenResult) { return -1; }
+        return lenResult.nextOffset + lenResult.value;
+      }
+      case 5: {
+        // 32-bit fixed：4 字节
+        return offset + 4;
+      }
+      default:
+        return -1;
+    }
   }
 }

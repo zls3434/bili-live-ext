@@ -3,18 +3,19 @@
  * @description 视频弹幕进度追踪器
  *
  * 主要功能：
- * - 根据视频播放进度逐条推送弹幕到输出通道
+ * - 根据视频播放进度逐条推送弹幕到弹幕面板
  * - 支持视频拖拽进度条（seek）后回退弹幕指针
  * - 使用二分查找快速定位弹幕位置
  * - 弹幕按时间排序并去重
  *
  * @author zls3434
  * @date 2026-05-02
+ * @modification 2026-05-06 zls3434 重构弹幕输出：从 OutputChannel 改为使用独立弹幕面板 DanmakuPanelProvider
  */
 
 import { DanmakuItem } from '../services/danmakuService';
 import { DanmakuService } from '../services/danmakuService';
-import { OutputChannelManager } from '../utils/outputChannelManager';
+import { DanmakuPanelProvider } from './DanmakuPanelProvider';
 import { BiliApiService } from '../services/biliApi';
 import { logger } from '../utils/logger';
 
@@ -25,6 +26,11 @@ import { logger } from '../utils/logger';
  * - 存储按时间排序的弹幕列表
  * - 维护当前位置指针，避免重复输出
  * - 支持 seek 操作后回退指针
+ * - 将弹幕数据推送到 DanmakuPanelProvider（独立弹幕面板）进行渲染
+ *
+ * 修改日期：2026-05-06
+ * 修改人：zls3434
+ * 修改目的：将弹幕输出从 OutputChannel 改为使用 DanmakuPanelProvider
  */
 export class VideoDanmakuTracker {
   /** 按时间排序的弹幕列表 */
@@ -32,11 +38,37 @@ export class VideoDanmakuTracker {
   /** 当前输出位置指针 */
   private _danmakuIndex: number = 0;
 
+  /**
+   * 弹幕面板提供者实例，用于将弹幕数据推送到独立弹幕面板渲染
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：替代原 outputChannelManager，弹幕输出改用 DanmakuPanelProvider
+   */
+  private _danmakuPanel: DanmakuPanelProvider | null = null;
+
   constructor(
     private readonly danmakuService: DanmakuService,
-    private readonly outputChannelManager: OutputChannelManager,
     private readonly apiService: BiliApiService,
   ) {}
+
+  /**
+   * 注入弹幕面板提供者实例
+   *
+   * 由于 VideoDanmakuTracker 在 BiliMainViewProvider 构造时初始化，
+   * 而 DanmakuPanelProvider 在 extension.ts 中独立创建后再注入，
+   * 因此需要通过 setter 方法延迟注入。
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：新增方法，支持从 BiliMainViewProvider 注入 DanmakuPanelProvider 实例
+   *
+   * @param {DanmakuPanelProvider} danmakuPanel - 弹幕面板提供者实例
+   * @returns {void}
+   */
+  public setDanmakuPanel(danmakuPanel: DanmakuPanelProvider): void {
+    this._danmakuPanel = danmakuPanel;
+  }
 
   /**
    * 加载视频弹幕数据
@@ -49,9 +81,9 @@ export class VideoDanmakuTracker {
    */
   async loadDanmaku(cid: number, videoDurationSec: number = 0): Promise<void> {
     try {
-      this.outputChannelManager.showDanmakuChannel(true);
-      this.outputChannelManager.clearDanmakuChannel();
-      this.outputChannelManager.appendDanmaku('--- 弹幕将随视频播放进度显示 ---');
+      // 清空弹幕面板中的旧弹幕数据
+      // 注意：不需要调用 activateForVideo，因为 BiliMainViewProvider.openVideo 已在调用此方法前激活了弹幕面板
+      this._danmakuPanel?.clearDanmaku();
 
       this._danmakuList = [];
       this._danmakuIndex = 0;
@@ -89,28 +121,36 @@ export class VideoDanmakuTracker {
   /**
    * 视频播放进度更新回调
    *
-   * 根据当前播放时间（毫秒），将已到达时间的弹幕逐条输出到 bilidm 通道。
+   * 根据当前播放时间（毫秒），将已到达时间的弹幕逐条推送到弹幕面板。
    * 支持视频拖拽进度条（seek）后回退指针。
+   *
+   * 修改日期：2026-05-06
+   * 修改人：zls3434
+   * 修改目的：将弹幕输出从 OutputChannel 改为使用 DanmakuPanelProvider，
+   *          直接传递 DanmakuItem 对象，由面板自行格式化和渲染
    *
    * @param {number} currentMs - 当前视频播放时间（毫秒）
    */
   onVideoProgress(currentMs: number): void {
     if (this._danmakuList.length === 0) { return; }
 
+    // 检测视频是否被拖拽（seek）到更早的时间点
+    // 如果当前时间比上一次输出的弹幕时间早超过3秒，则认为发生了 seek
     if (this._danmakuIndex > 0 && this._danmakuList.length > 0) {
       const lastOutputtedTime = this._danmakuList[this._danmakuIndex - 1].timestamp;
       if (currentMs < lastOutputtedTime - 3000) {
+        // seek 回退：重新定位弹幕指针，清空面板后重新输出
         this._danmakuIndex = this._findDanmakuIndexByTime(currentMs);
-        this.outputChannelManager.clearDanmakuChannel();
-        this.outputChannelManager.appendDanmaku('--- 弹幕将随视频播放进度显示 ---');
+        this._danmakuPanel?.clearDanmaku();
       }
     }
 
+    // 逐条输出已到达当前时间点的弹幕
     while (this._danmakuIndex < this._danmakuList.length) {
       const danmaku = this._danmakuList[this._danmakuIndex];
       if (danmaku.timestamp <= currentMs) {
-        const text = this.danmakuService.formatDanmakuText(danmaku);
-        this.outputChannelManager.appendDanmaku(text);
+        // 直接传递 DanmakuItem 对象到弹幕面板，由面板负责格式化渲染
+        this._danmakuPanel?.appendDanmaku(danmaku);
         this._danmakuIndex++;
       } else {
         break;

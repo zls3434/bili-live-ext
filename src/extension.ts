@@ -5,6 +5,7 @@
  * 主要功能：
  * - 注册扩展激活和停用生命周期
  * - 注册侧边栏视图提供者（BiliMainViewProvider）
+ * - 注册弹幕面板视图提供者（DanmakuPanelProvider）
  * - 注册所有扩展命令（登录、打开视频、打开直播、返回）
  * - 管理扩展全局状态
  * - 初始化全局日志管理器
@@ -15,10 +16,12 @@
  * @author zls3434
  * @date 2026-04-30
  * @modification 2026-04-30 zls3434 初始化全局日志管理器，替代独立的输出通道
+ * @modification 2026-05-06 zls3434 新增弹幕面板视图（DanmakuPanelProvider）注册
  */
 
 import * as vscode from 'vscode';
 import { BiliMainViewProvider } from './webview/BiliMainViewProvider';
+import { DanmakuPanelProvider } from './webview/DanmakuPanelProvider';
 import { ProxyServer } from './services/proxyServer';
 import { OutputChannelManager } from './utils/outputChannelManager';
 import { logger } from './utils/logger';
@@ -33,7 +36,8 @@ let proxyServer: ProxyServer | null = null;
  * 1. 初始化全局日志管理器
  * 2. 启动本地代理服务器（用于绕过 B站 CDN 防盗链）
  * 3. 创建 BiliMainViewProvider 实例并注册到侧边栏
- * 4. 注册所有用户可触发的命令
+ * 4. 创建 DanmakuPanelProvider 实例并注册到弹幕面板
+ * 5. 注册所有用户可触发的命令
  *
  * @param {vscode.ExtensionContext} context - VSCode 扩展上下文
  * @returns {Promise<void>}
@@ -56,6 +60,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // 步骤1：创建主视图提供者实例，传入代理 URL
     const provider = new BiliMainViewProvider(context.extensionUri, context, proxyBaseUrl);
 
+    // 步骤1.5：创建弹幕面板提供者实例（共享 API 服务和会话管理器）
+    const danmakuPanel = new DanmakuPanelProvider(
+      context.extensionUri,
+      provider.getSessionManager(),
+      provider.getApiService()
+    );
+
     // 步骤2：注册侧边栏 Webview 视图提供者
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(
@@ -68,6 +79,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       )
     );
+
+    // 步骤2.5：注册弹幕面板 Webview 视图提供者
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(
+        'bilibili-danmaku-panel',
+        danmakuPanel,
+        {
+          webviewOptions: {
+            retainContextWhenHidden: true,
+          },
+        }
+      )
+    );
+
+    // 将弹幕面板提供者注入主视图，用于转发弹幕数据
+    provider.setDanmakuPanel(danmakuPanel);
 
     // 步骤3：注册登录命令
     context.subscriptions.push(

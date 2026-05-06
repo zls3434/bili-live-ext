@@ -8,9 +8,12 @@
  * - Tab 切换按钮（关注/收藏/推荐/直播）
  * - 内容区域（列表视图 / 播放器视图 / 登录 QR 码视图）
  * - 内嵌前端 JavaScript 脚本（Tab 切换、列表渲染、消息通信）
+ * - 直播媒体控制栏（播放/暂停、音量调整、静音）
  *
  * @author zls3434
  * @date 2026-05-04
+ * @modification 2026-05-06 zls3434 新增直播模式底部媒体控制栏（播放/暂停、音量调整、静音），
+ *              包含 CSS 样式、HTML 结构和 JS 交互逻辑
  */
 
 import * as vscode from 'vscode';
@@ -290,6 +293,74 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           width: 100%;
           height: 100%;
           object-fit: contain;
+        }
+
+        /* ========== 直播媒体控制栏（底部浮动，悬停显示） ========== */
+        /* 修改日期：2026-05-06 zls3434 新增直播模式下的播放/暂停、音量调整、静音控制样式 */
+        .player-controls {
+          position: absolute;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          display: flex;
+          align-items: center;
+          padding: 6px 12px;
+          background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
+          opacity: 0;
+          transition: opacity 0.3s ease;
+          z-index: 10;
+          gap: 8px;
+        }
+        .player-video-area:hover .player-controls { opacity: 1; }
+        .player-ctrl-btn {
+          background: none;
+          border: none;
+          color: #fff;
+          cursor: pointer;
+          font-size: 16px;
+          padding: 4px 6px;
+          border-radius: 4px;
+          line-height: 1;
+          opacity: 0.9;
+          flex-shrink: 0;
+          transition: opacity 0.15s, background-color 0.15s;
+        }
+        .player-ctrl-btn:hover { opacity: 1; background-color: rgba(255,255,255,0.2); }
+        /* 修改日期：2026-05-06 zls3434 控制栏图标使用内联 SVG，统一为平面单色白色图标 */
+        .player-ctrl-btn svg {
+          width: 18px;
+          height: 18px;
+          fill: #fff;
+          vertical-align: middle;
+          pointer-events: none;
+        }
+        .player-volume-slider {
+          width: 80px;
+          height: 4px;
+          -webkit-appearance: none;
+          appearance: none;
+          background: rgba(255,255,255,0.3);
+          border-radius: 2px;
+          outline: none;
+          cursor: pointer;
+          flex-shrink: 0;
+        }
+        .player-volume-slider::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 12px;
+          height: 12px;
+          border-radius: 50%;
+          background: #fff;
+          cursor: pointer;
+          border: none;
+        }
+        .player-volume-slider:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+        .player-volume-slider.muted {
+          opacity: 0.4;
         }
         /* ========== 登录区 ========== */
         .login-area {
@@ -1027,6 +1098,15 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             html += '<video id="video-player" autoplay controls crossorigin="anonymous" style="width:100%;height:100%;object-fit:contain;"></video>';
           } else if (data.mediaType === 'live') {
             html += '<video id="video-player" autoplay crossorigin="anonymous" style="width:100%;height:100%;object-fit:contain;"></video>';
+            /* 修改日期：2026-05-06 zls3434 直播模式新增底部媒体控制栏：播放/暂停、音量调整、静音 */
+            html += '<div class="player-controls" id="player-controls">';
+            html += '<button class="player-ctrl-btn" id="ctrl-play-pause" title="播放/暂停">' + SVG_ICON_PAUSE + '</button>';
+            html += '<button class="player-ctrl-btn" id="ctrl-volume-icon" title="静音">' + SVG_ICON_VOLUME_HIGH + '</button>';
+            html += '<input type="range" class="player-volume-slider" id="ctrl-volume-slider" min="0" max="100" value="100" title="音量" />';
+            /* 修改日期：2026-05-06 qiweizhe 新增直播画面刷新按钮，用于卡顿时重新加载 */
+            html += '<span style="flex:1"></span>';
+            html += '<button class="player-ctrl-btn" id="ctrl-refresh" title="刷新画面">' + SVG_ICON_REFRESH + '</button>';
+            html += '</div>';
           }
           html += '</div>';
 
@@ -1042,7 +1122,23 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
           // 初始化播放器
           setupPlayer(data);
+
+          /* 修改日期：2026-05-06 qiweizhe 保存播放器配置数据，供刷新按钮重新加载使用 */
+          currentPlayerData = data;
         }
+
+        /**
+         * 保存当前播放器的配置数据，用于刷新按钮重新加载
+         *
+         * 修改日期：2026-05-06
+         * 修改人：qiweizhe
+         * 修改目的：直播卡顿时点击刷新按钮需要重新调用 setupPlayer，
+         *          但 data 对象在 enterPlayerMode 作用域内无法被 bindLiveMediaControls 访问，
+         *          因此保存到模块级变量
+         *
+         * @type {Object|null}
+         */
+        let currentPlayerData = null;
 
         /**
          * flv.js 播放器实例（直播用）
@@ -1102,6 +1198,138 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             lastPushedMs = -1;
             videoEl.addEventListener('timeupdate', onVideoTimeUpdate);
           }
+
+          /* 修改日期：2026-05-06 zls3434 直播模式新增底部媒体控制栏事件绑定 */
+          if (data.mediaType === 'live') {
+            bindLiveMediaControls(videoEl);
+          }
+        }
+
+        /**
+         * 直播媒体控制栏 SVG 图标（平面单色白色图标）
+         *
+         * 修改日期：2026-05-06
+         * 修改人：zls3434
+         * 修改目的：使用内联 SVG 替代 emoji 图标，统一为平面单色白色风格，
+         *          与 VSCode 侧边栏深色背景搭配更协调
+         */
+
+        /* 播放图标：实心三角形 */
+        var SVG_ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+        /* 暂停图标：两条竖线 */
+        var SVG_ICON_PAUSE = '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+        /* 高音量图标：喇叭+两道声波 */
+        var SVG_ICON_VOLUME_HIGH = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+        /* 低音量图标：喇叭+一道声波 */
+        var SVG_ICON_VOLUME_LOW = '<svg viewBox="0 0 24 24"><path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM3 9v6h4l5 5V4L7 9H3z"/></svg>';
+        /* 静音图标：喇叭+叉号 */
+        var SVG_ICON_VOLUME_MUTED = '<svg viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-2.74-1.41-5.16-3.56-6.59v2.06c1.34.94 2.24 2.47 2.56 4.03zM3 9v6h4l5 5V4L7 9H3z"/><path d="M18.17 4.77L4.77 18.17l1.42 1.42L19.59 6.18z"/></svg>';
+        /* 刷新图标：圆形箭头（直播卡顿时重新加载画面用） */
+        /* 修改日期：2026-05-06 qiweizhe 新增直播画面刷新按钮图标 */
+        var SVG_ICON_REFRESH = '<svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
+
+        /**
+         * 绑定直播模式下的媒体控制栏事件
+         *
+         * 包含播放/暂停、音量调整、静音三个控制功能，
+         * 通过直接操作 video 元素属性实现控制，无需与后端通信。
+         * 监听 video 的 volumechange 和 play/pause 事件保持 UI 状态同步。
+         *
+         * 修改日期：2026-05-06
+         * 修改人：zls3434
+         * 修改目的：直播模式无浏览器原生 controls，新增自定义控制栏交互逻辑
+         *
+         * @param {HTMLVideoElement} videoEl - 视频播放元素
+         * @returns {void}
+         */
+        function bindLiveMediaControls(videoEl) {
+          const playPauseBtn = document.getElementById('ctrl-play-pause');
+          const volumeIcon = document.getElementById('ctrl-volume-icon');
+          const volumeSlider = document.getElementById('ctrl-volume-slider');
+
+          if (!playPauseBtn || !volumeIcon || !volumeSlider) { return; }
+
+          /**
+           * 更新播放/暂停按钮图标
+           *
+           * 暂停中显示播放三角形 SVG，播放中显示暂停双竖线 SVG
+           *
+           * @returns {void}
+           */
+          function updatePlayPauseIcon() {
+            playPauseBtn.innerHTML = videoEl.paused ? SVG_ICON_PLAY : SVG_ICON_PAUSE;
+          }
+
+          /**
+           * 更新音量图标和滑块状态
+           *
+           * 根据当前音量和静音状态显示对应 SVG 图标：
+           * - 静音或音量为0：静音图标（喇叭+叉号），滑块添加 muted 样式
+           * - 低音量(1-50)：低音量图标（喇叭+一道声波）
+           * - 高音量(51-100)：高音量图标（喇叭+两道声波）
+           *
+           * @returns {void}
+           */
+          function updateVolumeUI() {
+            const vol = videoEl.muted ? 0 : videoEl.volume;
+            if (videoEl.muted || vol === 0) {
+              volumeIcon.innerHTML = SVG_ICON_VOLUME_MUTED;
+              volumeSlider.classList.add('muted');
+            } else if (vol <= 0.5) {
+              volumeIcon.innerHTML = SVG_ICON_VOLUME_LOW;
+              volumeSlider.classList.remove('muted');
+            } else {
+              volumeIcon.innerHTML = SVG_ICON_VOLUME_HIGH;
+              volumeSlider.classList.remove('muted');
+            }
+            volumeSlider.value = String(Math.round(vol * 100));
+          }
+
+          /* 播放/暂停按钮点击事件：切换播放状态 */
+          playPauseBtn.addEventListener('click', () => {
+            if (videoEl.paused) {
+              videoEl.play().catch(() => {});
+            } else {
+              videoEl.pause();
+            }
+          });
+
+          /* 音量图标点击事件：切换静音状态 */
+          volumeIcon.addEventListener('click', () => {
+            videoEl.muted = !videoEl.muted;
+            updateVolumeUI();
+          });
+
+          /* 音量滑块拖动事件：实时调整音量 */
+          volumeSlider.addEventListener('input', () => {
+            const val = parseInt(volumeSlider.value, 10) / 100;
+            videoEl.volume = val;
+            /* 用户手动调整音量时自动解除静音 */
+            if (videoEl.muted && val > 0) {
+              videoEl.muted = false;
+            }
+            updateVolumeUI();
+          });
+
+          /* 监听 video 的 volumechange 事件，同步更新音量 UI */
+          videoEl.addEventListener('volumechange', updateVolumeUI);
+
+          /* 监听 video 的 play/pause 事件，同步更新播放/暂停按钮图标 */
+          videoEl.addEventListener('play', updatePlayPauseIcon);
+          videoEl.addEventListener('pause', updatePlayPauseIcon);
+
+          /* 修改日期：2026-05-06 qiweizhe 新增刷新按钮事件：重新加载直播画面 */
+          const refreshBtn = document.getElementById('ctrl-refresh');
+          if (refreshBtn && currentPlayerData) {
+            refreshBtn.addEventListener('click', () => {
+              /* 重新调用 setupPlayer 销毁旧 flv 实例并重新加载直播流 */
+              setupPlayer(currentPlayerData);
+            });
+          }
+
+          /* 初始化控制栏 UI 状态 */
+          updatePlayPauseIcon();
+          updateVolumeUI();
         }
 
         /**
@@ -1144,6 +1372,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
           // 重置弹幕进度追踪状态
           lastPushedMs = -1;
+
+          /* 修改日期：2026-05-06 qiweizhe 清理保存的播放器配置数据 */
+          currentPlayerData = null;
 
           // 恢复之前保存的列表内容
           if (savedListHtml) {
