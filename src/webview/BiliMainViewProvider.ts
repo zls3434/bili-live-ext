@@ -178,6 +178,29 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           qrCodeKey: '',
         };
         logger.info('bilibili 登录态已自动恢复');
+
+        /**
+         * 修复：恢复登录态后主动通知 Webview 更新 UI
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：解决重装/更新插件后初次加载时，后端登录态已恢复但前端 UI 仍显示"登录"按钮的问题。
+         * 场景：_restoreSession() 在构造函数中异步执行，此时 Webview 可能已创建完毕，
+         *       但 onDidChangeVisibility 只在面板从隐藏变为可见时触发，首次打开不会触发。
+         *       因此需要在此处主动推送登录状态，确保 UI 与后端状态一致。
+         */
+        this._postMessage({ type: 'updateLoginStatus', loggedIn: true });
+      } else {
+        /**
+         * 修复：Cookie 无效时主动通知 Webview 更新 UI 为未登录状态
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：Cookie 已过期时，清空持久化存储并通知前端为未登录状态，
+         *          避免前端从缓存恢复的 loggedIn 状态与实际不一致
+         */
+        await this.sessionManager.clearSession();
+        this._postMessage({ type: 'updateLoginStatus', loggedIn: false });
       }
     }
   }

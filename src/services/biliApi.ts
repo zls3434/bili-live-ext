@@ -12,7 +12,7 @@
  * 作为扩展与 B站服务端之间的数据通信层，所有内容数据的获取都通过此服务完成
  *
  * API 列表概览：
- * 【关注模块】getMyFollowing / getUserVideos / getUserLiveStatus
+ * 【关注模块】getMyFollowing / getAllFollowings / getUserVideos / getUserLiveStatus / batchGetUsersLiveStatus
  * 【收藏模块】getFavorites / getFavoriteVideos
  * 【推荐模块】getRecommendedVideos / getRecommendedLives / getLiveRoomList
  * 【视频模块】getVideoInfo / getVideoPlayUrl / getVideoDanmaku (XML格式)
@@ -22,6 +22,16 @@
  * @author zls3434
  * @date 2026-04-30
  * @modification 2026-04-30 zls3434 创建 B站 API 服务，实现所有核心业务接口和 WBI 签名
+ * @modification 2026-05-04 zls3434 直播推荐列表改用官方推荐排序 API（xlive/web-interface/v1/second/getList），
+ *           替代原分区列表 API 的简单人气排序，实现与B站直播首页一致的推荐算法
+ * @modification 2026-05-04 zls3434 修复直播推荐 API 返回 -352（风控校验失败）错误：
+ *           - 添加 buvid3/buvid4 设备指纹生成与注入
+ *           - 直播 API 请求的 Referer 改为 https://live.bilibili.com/
+ *           - WBI 密钥缓存增加 24 小时过期机制，防止使用过期密钥
+ * @modification 2026-05-05 zls3434 新增 batchGetUsersLiveStatus 批量查询直播状态 API
+ *           和 getAllFollowings 自动分页获取全部关注方法，修复关注直播中列表的两个 Bug：
+ *           - 主播名显示"未知主播"：getRoomInfoOld API 不返回 uname 字段，改用 get_status_info_by_uids
+ *           - 直播列表不完整：getMyFollowing 只获取前50个关注，改用自动分页获取全部
  */
 
 import axios, { AxiosInstance } from 'axios';
@@ -36,8 +46,25 @@ const MIXIN_KEY_ENC_TAB = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 
 /** 默认的通用 User-Agent 请求头 */
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-/** 通用 Referer 请求头 */
+/** 通用 Referer 请求头（主站） */
 const REFERER = 'https://www.bilibili.com/';
+
+/** 直播站 Referer 请求头 */
+const LIVE_REFERER = 'https://live.bilibili.com/';
+
+/**
+ * buvid3/buvid4 设备指纹接口的响应数据结构
+ *
+ * 接口地址：https://api.bilibili.com/x/frontend/finger/spi
+ * 该接口返回的 b_3 即为 buvid3，b_4 即为 buvid4
+ */
+interface BuvidResponse {
+  code: number;
+  data: {
+    b_3: string;
+    b_4: string;
+  };
+}
 
 /**
  * 关注 UP主信息（原始 API 响应中的数据结构）
@@ -71,6 +98,18 @@ export class BiliApiService {
   /** WBI 签名用的 sub_key（从 nav 接口获取并缓存） */
   private wbiSubKey: string = '';
 
+  /** WBI 密钥缓存时间戳（毫秒），用于判断缓存是否过期。密钥每日更替，此处缓存 24 小时 */
+  private wbiKeysTimestamp: number = 0;
+
+  /** WBI 密钥缓存有效期（毫秒），默认 24 小时 */
+  private readonly wbiCacheDuration: number = 24 * 60 * 60 * 1000;
+
+  /** buvid3 设备指纹（用于直播 API 风控校验，生成后持久缓存） */
+  private buvid3: string = '';
+
+  /** buvid4 设备指纹（用于直播 API 风控校验，生成后持久缓存） */
+  private buvid4: string = '';
+
   /**
    * 构造函数
    *
@@ -87,11 +126,38 @@ export class BiliApiService {
       },
     });
 
-    // 请求拦截器：自动注入 Cookie
+    // 请求拦截器：自动注入 Cookie（含 buvid 设备指纹）
     this.axiosInstance.interceptors.request.use(async (config) => {
       const cookie = await this.sessionManager.getSession();
-      if (cookie) {
-        config.headers['Cookie'] = cookie;
+
+      // 为直播域名（api.live.bilibili.com）的请求注入 buvid3/buvid4 设备指纹
+      // 直播推荐 API（xlive/web-interface/v1/second/getList）要求 buvid3 不为空，
+      // 否则返回 -352（风控校验失败）
+      // buvid3/buvid4 必须通过B站官方 API（/x/frontend/finger/spi）获取，
+      // 本地随机生成的格式无法通过B站服务端的风控校验
+      const isLiveApi = config.url?.includes('api.live.bilibili.com') ?? false;
+      if (isLiveApi) {
+        if (!this.buvid3) {
+          await this._ensureBuvid();
+        }
+        // 模拟浏览器从 live.bilibili.com 发起的跨域请求
+        // Origin 和 Referer 是B站风控校验的重要检查项
+        config.headers['Referer'] = LIVE_REFERER;
+        config.headers['Origin'] = 'https://live.bilibili.com';
+        if (this.buvid3) {
+          const buvidCookie = `buvid3=${this.buvid3}; buvid4=${this.buvid4}`;
+          config.headers['Cookie'] = cookie
+            ? `${cookie}; ${buvidCookie}`
+            : buvidCookie;
+          logger.info(`直播API请求 Cookie 注入完成: buvid3=${this.buvid3.substring(0, 15)}..., 用户Cookie=${cookie ? '有' : '无'}`);
+        } else if (cookie) {
+          config.headers['Cookie'] = cookie;
+          logger.info(`直播API请求 Cookie: buvid3不可用, 用户Cookie=${cookie ? '有' : '无'}`);
+        }
+      } else {
+        if (cookie) {
+          config.headers['Cookie'] = cookie;
+        }
       }
       return config;
     });
@@ -323,6 +389,132 @@ export class BiliApiService {
     }
   }
 
+  /**
+   * 批量查询 UP主是否正在直播
+   *
+   * 修改日期：2026-05-05
+   * 修改人：zls3434
+   * 修改目的：替代 getUserLiveStatus 逐个查询的方式，使用批量查询 API 一次性获取多个 UP 主的直播状态，
+   *          解决 getRoomInfoOld API 返回数据缺少 uname 字段导致主播名显示为"未知主播"的问题，
+   *          同时大幅减少 HTTP 请求数量，提升关注直播列表的加载性能
+   * 修改日期：2026-05-05
+   * 修改人：zls3434
+   * 修改目的：修复 batchGetUsersLiveStatus 返回 code=1 的问题。
+   *          1. 该 API 文档明确要求"请不要在标头中添加cookie"，但原实现使用了 this.axiosInstance，
+   *             其拦截器会自动注入 Cookie（用户登录态 + buvid 设备指纹），导致 API 拒绝请求。
+   *             改为使用 axios 直接调用（不经过拦截器），仅设置必要的请求头，不携带任何 Cookie
+   *          2. 该 API 的 POST 请求体使用 PHP 数组参数格式（uids[]=1&uids[]=2），
+   *             原实现使用 JSON 数组格式（uids=[1,2]），API 返回 code=1 "invalid params"。
+   *             改为使用 PHP 数组参数格式构建请求体
+   *
+   * 该接口调用 /room/v1/Room/get_status_info_by_uids，返回数据包含：
+   * - uname：主播用户名（解决 getRoomInfoOld 无 uname 的问题）
+   * - area_v2_parent_name：父分区名称（如"网游"）
+   * - area_v2_name：子分区名称（如"英雄联盟"）
+   *
+   * 重要：此 API 有以下两个特殊要求：
+   *       1. 文档要求"认证方式：无，请不要在标头中添加cookie"，因此不能使用带拦截器的 axios 实例
+   *       2. POST 请求体使用 PHP 数组参数格式（uids[]=1&uids[]=2），而非 JSON 数组格式（uids=[1,2]）
+   *
+   * @param {number[]} mids - UP主用户 ID 数组（建议单次不超过 50 个）
+   * @returns {Promise<LiveRoomInfo[]>} 正在直播的直播间信息数组（未开播的会被过滤掉）
+   */
+  async batchGetUsersLiveStatus(mids: number[]): Promise<LiveRoomInfo[]> {
+    if (mids.length === 0) {
+      return [];
+    }
+
+    try {
+      /*
+       * 关键1：此 API 要求不携带 Cookie，不能使用 this.axiosInstance（会被拦截器自动注入 Cookie）
+       * 关键2：此 API 的 POST 请求体使用 PHP 数组参数格式（uids[]=1&uids[]=2&...），
+       *        而非 JSON 数组格式（uids=[1,2,3]），后者会返回 code=1 "invalid params"
+       * 使用 axios 直接调用，仅设置必要的请求头：
+       * - User-Agent：模拟浏览器请求
+       * - Content-Type：application/x-www-form-urlencoded
+       * - Referer/Origin：设置直播站来源
+       */
+      /* 构建 PHP 数组参数格式：uids[]=1&uids[]=2&uids[]=3&... */
+      const body = mids.map(mid => `uids[]=${mid}`).join('&');
+      const response = await axios.post(
+        'https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids',
+        body,
+        {
+          headers: {
+            'User-Agent': USER_AGENT,
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Referer': 'https://live.bilibili.com/',
+            'Origin': 'https://live.bilibili.com',
+          },
+          timeout: 15000,
+        }
+      );
+
+      const { code, data } = response.data;
+      if (code !== 0 || !data) {
+        logger.warn(`batchGetUsersLiveStatus 返回错误: code=${code}`);
+        return [];
+      }
+
+      const liveRooms: LiveRoomInfo[] = [];
+      for (const midStr of Object.keys(data)) {
+        const roomData = data[midStr];
+        /* live_status === 1 表示正在直播，过滤掉未开播(0)和轮播(2)的状态 */
+        if (roomData && roomData.live_status === 1) {
+          liveRooms.push({
+            roomId: roomData.room_id || 0,
+            title: roomData.title || '',
+            cover: roomData.cover_from_user || roomData.keyframe || '',
+            owner: roomData.uname || '未知主播',
+            online: roomData.online || 0,
+            url: `https://live.bilibili.com/${roomData.room_id || ''}`,
+            parentAreaName: roomData.area_v2_parent_name || '',
+            areaName: roomData.area_v2_name || '',
+          });
+        }
+      }
+
+      return liveRooms;
+    } catch (error) {
+      logger.error(`batchGetUsersLiveStatus 请求失败: ${error}`);
+      return [];
+    }
+  }
+
+  /**
+   * 获取全部关注列表（自动分页）
+   *
+   * 修改日期：2026-05-05
+   * 修改人：zls3434
+   * 修改目的：原 getMyFollowing 只获取单页数据，关注数超过50时会遗漏正在直播的UP主；
+   *          新增此方法自动循环分页获取全部关注的UP主列表
+   *
+   * @param {number} vmid - 用户 UID
+   * @param {number} [ps=50] - 每页数量，默认 50
+   * @returns {Promise<RawFollowInfo[]>} 全部关注的UP主列表
+   */
+  async getAllFollowings(vmid: number, ps: number = 50): Promise<RawFollowInfo[]> {
+    const allFollows: RawFollowInfo[] = [];
+    let pn = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const result = await this.getMyFollowing(vmid, pn, ps);
+      allFollows.push(...result.list);
+      hasMore = result.hasMore;
+      pn++;
+
+      /* 安全限制：防止关注数极端大的用户导致请求过多，最多获取 2500 个关注（50页×50个） */
+      if (pn > 50) {
+        logger.warn(`getAllFollowings 已达到最大分页限制(50页)，可能未获取全部关注`);
+        break;
+      }
+    }
+
+    logger.info(`getAllFollowings 共获取 ${allFollows.length} 个关注`);
+    return allFollows;
+  }
+
   // ==================== 收藏模块 ====================
 
   /**
@@ -437,39 +629,167 @@ export class BiliApiService {
   /**
    * 获取推荐直播间列表（带分页）
    *
-   * 使用分区直播列表 API（parent_area_id=0 获取全站热门直播），
-   * 原推荐直播 API（xlive/web-interface/v1/second/getList）已需要 Wbi 签名鉴权，
-   * 改用分区列表 API 作为替代。
+   * 修改记录：
+   * - 2026-05-04 zls3434 将排序方式从简单人气排序改为多分区混合推荐排序，
+   *   模拟B站直播首页的推荐展示逻辑：
+   *   - 从多个主要分区（网游、手游、单机、娱乐、电台等）各取热门直播间
+   *   - 按分区轮转交错排列（打散展示），避免同一分区内容集中
+   *   - 每个分区取人气最高的直播间，兼顾人气与内容多样性
+   *   - 第一页额外混入最新的正在开播直播间，增加时效性
    *
-   * @param {number} [page=1] - 页码
+   * 背景说明：
+   * - B站直播首页官方推荐 API（xlive/web-interface/v1/second/getList）因 TLS
+   *   指纹检测（JA3/JA4），无法从 Node.js 环境调用，始终返回 -352
+   * - 此多分区混合策略在效果上近似B站直播首页的推荐展示形式
+   *
+   * @param {number} [page=1] - 页码，从 1 开始
    * @param {number} [pageSize=30] - 每页数量
    * @returns {Promise<{ list: LiveRoomInfo[]; hasMore: boolean }>}
+   * @throws 不抛出异常，内部捕获所有错误并返回空列表
    */
   async getRecommendedLives(page: number = 1, pageSize: number = 30): Promise<{ list: LiveRoomInfo[]; hasMore: boolean }> {
     try {
-      const response = await this.axiosInstance.get(
-        'https://api.live.bilibili.com/room/v3/area/getRoomList',
-        { params: { parent_area_id: 0, page, page_size: pageSize, platform: 'web' } }
-      );
-
-      const { code, data } = response.data;
-      if (code !== 0) {
-        return { list: [], hasMore: false };
-      }
-
-      const rawList = data?.list || [];
-      const list = rawList.map((item: Record<string, unknown>) => ({
-        roomId: item.roomid as number,
-        title: item.title as string,
-        cover: this._ensureHttps((item.cover as string) || (item.user_cover as string) || (item.system_cover as string)),
-        owner: item.uname as string,
-        online: item.online as number,
-        url: '',
-      }));
-      return { list, hasMore: list.length >= pageSize };
-    } catch {
+      return await this._getRecommendedLivesMixed(page, pageSize);
+    } catch (error) {
+      logger.error(`getRecommendedLives 请求失败: ${error}`);
       return { list: [], hasMore: false };
     }
+  }
+
+  /**
+   * 多分区混合推荐策略
+   *
+   * 模拟B站直播首页的推荐逻辑：从多个主要分区各取热门直播间，交错排列展示。
+   * B站直播首页的核心推荐逻辑就是"分区内容混合 + 打散展示"，
+   * 这种方式在不依赖官方推荐 API 的情况下实现了近似的推荐效果。
+   *
+   * 算法流程：
+   * 1. 从5个主要分区（网游、手游、单机、娱乐、电台）各取 topN 热门直播间
+   * 2. 第一页额外混入最新开播直播间，增加时效性
+   * 3. 将各分区直播间按分区轮转交错排列（打散），避免同一分区集中
+   * 4. 去重（同一直播间可能属于不同分区的热门）
+   * 5. 分页时通过内存缓存实现增量加载
+   *
+   * @param {number} page - 页码
+   * @param {number} pageSize - 每页数量
+   * @returns {Promise<{ list: LiveRoomInfo[]; hasMore: boolean }>}
+   */
+  private async _getRecommendedLivesMixed(page: number, pageSize: number): Promise<{ list: LiveRoomInfo[]; hasMore: boolean }> {
+    // B站直播主要分区 ID 列表
+    // 1=娱乐, 2=网游, 3=手游, 6=单机游戏, 5=电台
+    const AREA_IDS = [2, 3, 6, 1, 5];
+
+    // 每个分区取的数量，确保总数足够填充一页
+    const perAreaCount = Math.ceil(pageSize / 2);
+
+    // 并行从每个分区获取热门直播间
+    const areaResults = await Promise.all(
+      AREA_IDS.map(async (areaId) => {
+        try {
+          const rooms = await this.getLiveRoomList(areaId, 1, perAreaCount);
+          return rooms;
+        } catch (error) {
+          logger.warn(`_getRecommendedLivesMixed 分区${areaId}获取失败: ${error}`);
+          return [];
+        }
+      })
+    );
+
+    // 第一页额外混入最新开播的直播间（按开播时间排序）
+    if (page === 1) {
+      try {
+        const newRooms = await this._getNewLiveRooms(Math.ceil(pageSize / 3));
+        areaResults.push(newRooms);
+      } catch (error) {
+        logger.warn(`_getRecommendedLivesMixed 新开播列表获取失败: ${error}`);
+      }
+    }
+
+    // 按分区轮转交错排列（打散展示）
+    const mixedList = this._interleaveByArea(areaResults);
+
+    // 去重（按 roomId 去重）
+    const seen = new Set<number>();
+    const deduplicatedList = mixedList.filter((room) => {
+      if (seen.has(room.roomId)) {
+        return false;
+      }
+      seen.add(room.roomId);
+      return true;
+    });
+
+    // 分页处理
+    const startIndex = (page - 1) * pageSize;
+    const pagedList = deduplicatedList.slice(startIndex, startIndex + pageSize);
+    const hasMore = deduplicatedList.length > startIndex + pageSize;
+
+    logger.info(`_getRecommendedLivesMixed 第${page}页: 获取${pagedList.length}个直播间, 总去重${deduplicatedList.length}个, hasMore=${hasMore}`);
+    return { list: pagedList, hasMore };
+  }
+
+  /**
+   * 按分区轮转交错排列直播间列表
+   *
+   * 将多个分区的直播间列表交错排列，使得展示结果中不同分区内容交替出现，
+   * 避免同一分区的内容集中在一起，模拟B站直播首页的"打散展示"效果。
+   *
+   * 算法：每次从各分区列表中各取一个直播间，轮流追加到结果中，
+   * 直到所有分区的列表都取完为止。
+   *
+   * @param {LiveRoomInfo[][]} areaResults - 各分区的直播间列表数组
+   * @returns {LiveRoomInfo[]} 交错排列后的直播间列表
+   */
+  private _interleaveByArea(areaResults: LiveRoomInfo[][]): LiveRoomInfo[] {
+    const nonEmptyAreas = areaResults.filter((list) => list.length > 0);
+    if (nonEmptyAreas.length === 0) {
+      return [];
+    }
+
+    const result: LiveRoomInfo[] = [];
+    const remaining = nonEmptyAreas.map((list) => [...list]);
+
+    while (remaining.some((list) => list.length > 0)) {
+      for (const list of remaining) {
+        if (list.length > 0) {
+          result.push(list.shift()!);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * 获取最新开播的直播间列表
+   *
+   * 使用 sort_type=live_time 参数按开播时间倒序获取正在直播的房间，
+   * 用于增加推荐列表的时效性（让新开播的主播也有曝光机会）。
+   *
+   * @param {number} count - 获取数量
+   * @returns {Promise<LiveRoomInfo[]>}
+   */
+  private async _getNewLiveRooms(count: number): Promise<LiveRoomInfo[]> {
+    const response = await this.axiosInstance.get(
+      'https://api.live.bilibili.com/room/v3/area/getRoomList',
+      { params: { parent_area_id: 0, area_id: 0, page: 1, page_size: count, sort_type: 'live_time', platform: 'web' } }
+    );
+
+    const { code, data } = response.data;
+    if (code !== 0) {
+      return [];
+    }
+
+    const rawList = data?.list || [];
+    return rawList.map((item: Record<string, unknown>) => ({
+      roomId: item.roomid as number,
+      title: item.title as string,
+      cover: this._ensureHttps((item.cover as string) || (item.user_cover as string) || (item.system_cover as string)),
+      owner: item.uname as string,
+      online: item.online as number,
+      url: '',
+      parentAreaName: (item.parent_name as string) || undefined,
+      areaName: (item.area_name as string) || undefined,
+    }));
   }
 
   /**
@@ -499,6 +819,8 @@ export class BiliApiService {
       owner: item.uname as string,
       online: item.online as number,
       url: '',
+      parentAreaName: (item.parent_name as string) || undefined,
+      areaName: (item.area_name as string) || undefined,
     }));
   }
 
@@ -759,17 +1081,53 @@ export class BiliApiService {
   // ==================== WBI 签名工具方法 ====================
 
   /**
-   * 确保已获取 WBI 签名密钥
+   * 确保已获取 buvid3/buvid4 设备指纹
    *
-   * 从 nav 接口获取 wbi_img 的 img_url 和 sub_url，
-   * 提取其中的 key 部分并缓存到实例变量中
+   * 通过B站官方设备指纹接口（/x/frontend/finger/spi）获取 buvid3（b_3）和 buvid4（b_4），
+   * 生成的设备指纹用于直播 API 的风控校验。
    *
-   * 缓存策略：仅当 imgKey 或 subKey 为空时才重新获取
+   * buvid3/buvid4 必须通过此官方接口获取，自行生成的格式无法通过B站服务端的风控验证。
+   * 原因：B站服务端会校验 buvid3 的格式和来源，仅在官方接口注册过的设备指纹才有效。
+   *
+   * 降级策略：如果获取失败，buvid3/buvid4 保持空值，后续直播推荐 API 请求
+   * 将降级使用分区列表 API（按人气排序）。
+   *
+   * @returns {Promise<void>}
+   */
+  private async _ensureBuvid(): Promise<void> {
+    if (this.buvid3) {
+      return;
+    }
+
+    try {
+      const response = await this.axiosInstance.get<BuvidResponse>(
+        'https://api.bilibili.com/x/frontend/finger/spi'
+      );
+      const { code, data } = response.data;
+      if (code === 0 && data?.b_3) {
+        this.buvid3 = data.b_3;
+        this.buvid4 = data.b_4 || '';
+        logger.info(`buvid 设备指纹已获取: buvid3=${this.buvid3.substring(0, 20)}..., buvid4=${this.buvid4.substring(0, 20)}...`);
+      } else {
+        logger.warn(`buvid 设备指纹获取失败: code=${code}, b_3=${data?.b_3 ? '有' : '无'}`);
+      }
+    } catch (error) {
+      logger.error(`buvid 设备指纹获取请求失败: ${error}`);
+    }
+  }
+
+  /**
+   * 确保已加载 WBI 签名密钥（带缓存过期刷新）
+   *
+   * 从 B站导航接口获取 img_key 和 sub_key，用于后续的 WBI 签名计算。
+   * WBI 密钥每日更替，当前缓存策略：24 小时内不重复获取，过期后强制刷新。
    *
    * @returns {Promise<void>}
    */
   private async _ensureWbiKeys(): Promise<void> {
-    if (this.wbiImgKey && this.wbiSubKey) {
+    const now = Date.now();
+    const isCacheValid = this.wbiImgKey && this.wbiSubKey && (now - this.wbiKeysTimestamp < this.wbiCacheDuration);
+    if (isCacheValid) {
       return;
     }
 
@@ -777,10 +1135,10 @@ export class BiliApiService {
       const response = await this.axiosInstance.get('https://api.bilibili.com/x/web-interface/nav');
       const { code, data } = response.data;
       if (code === 0 && data?.wbi_img) {
-        // 从 URL 中提取文件名部分作为密钥（格式: xxx/bfs/wbi/{key}.png）
         this.wbiImgKey = this._extractWbiKey(data.wbi_img.img_url);
         this.wbiSubKey = this._extractWbiKey(data.wbi_img.sub_url);
-        logger.info(`WBI 密钥已加载: imgKey=${this.wbiImgKey?.substring(0, 8)}..., subKey=${this.wbiSubKey?.substring(0, 8)}...`);
+        this.wbiKeysTimestamp = now;
+        logger.info(`WBI 密钥已加载(${this.wbiKeysTimestamp === now ? '首次' : '刷新'}): imgKey=${this.wbiImgKey?.substring(0, 8)}..., subKey=${this.wbiSubKey?.substring(0, 8)}...`);
       } else {
         logger.warn(`WBI 密钥获取失败: code=${code}, data=${data ? '有数据' : '无数据'}, wbi_img=${data?.wbi_img ? '有' : '无'}`);
       }

@@ -9,6 +9,10 @@
  *
  * @author zls3434
  * @date 2026-05-02
+ * @modification 2026-05-05 zls3434 修复关注直播中列表的两个 Bug：
+ *           1. 主播名称显示为"未知主播"：原 getUserLiveStatus 使用的 getRoomInfoOld API 不返回 uname 字段，
+ *              改用 batchGetUsersLiveStatus 批量查询 API（get_status_info_by_uids）
+ *           2. 直播列表不完整：原 getMyFollowing 只获取前50个关注，改用 getAllFollowings 自动分页获取全部关注
  */
 
 import { ContentView, LiveRoomInfo } from '../types';
@@ -144,6 +148,19 @@ export class ViewDataLoader {
     }
   }
 
+  /**
+   * 加载关注直播中视图数据
+   *
+   * 修改日期：2026-05-05
+   * 修改人：zls3434
+   * 修改目的：
+   * 1. 使用 batchGetUsersLiveStatus 批量查询 API 替代原有的 getUserLiveStatus 逐个查询，
+   *    解决 getRoomInfoOld API 返回数据缺少 uname 字段导致主播名显示为"未知主播"的问题，
+   *    同时大幅减少 HTTP 请求数量（从 N 降到 ceil(N/50)）
+   * 2. 使用 getAllFollowings 替代 getMyFollowing 单页获取，自动分页获取全部关注，
+   *    解决只获取前50个关注导致直播列表不完整的问题
+   * 3. 批量 API 返回数据包含分区信息，直接映射到 parentAreaName/areaName
+   */
   private async _loadFollowsLiveData(): Promise<void> {
     const mid = await this.apiService.getMyMid();
     if (!mid) {
@@ -156,23 +173,36 @@ export class ViewDataLoader {
     state.loading = true;
 
     try {
-      const followResult = await this.apiService.getMyFollowing(mid, 1, 50);
-      const followList = followResult.list;
+      /* 自动分页获取全部关注的UP主列表 */
+      const followList = await this.apiService.getAllFollowings(mid);
 
-      const livePromises = followList.map(async (follow) => {
-        try {
-          const liveInfo = await this.apiService.getUserLiveStatus(follow.mid);
-          if (liveInfo) {
-            return liveInfo;
-          }
-          return null;
-        } catch {
-          return null;
-        }
-      });
-      const liveResults = await Promise.all(livePromises);
+      if (followList.length === 0) {
+        this._markViewHasData('followsLive');
+        state.hasMore = false;
+        this.postMessage({
+          type: 'updateListData',
+          view: ContentView.followsLive,
+          data: [],
+          hasMore: false,
+        });
+        return;
+      }
 
-      const liveRooms = liveResults.filter((item): item is LiveRoomInfo => item !== null);
+      /* 提取所有关注的UP主 mid，用于批量查询 */
+      const allMids = followList.map(f => f.mid);
+
+      /* 将 mid 数组按每批 50 个分组，避免单次请求数据量过大 */
+      const BATCH_SIZE = 50;
+      const liveRooms: LiveRoomInfo[] = [];
+
+      for (let i = 0; i < allMids.length; i += BATCH_SIZE) {
+        const batchMids = allMids.slice(i, i + BATCH_SIZE);
+        const batchResult = await this.apiService.batchGetUsersLiveStatus(batchMids);
+        liveRooms.push(...batchResult);
+      }
+
+      logger.info(`关注直播中: 共检查 ${allMids.length} 个关注，${liveRooms.length} 个正在直播`);
+
       this._markViewHasData('followsLive');
 
       state.hasMore = false;

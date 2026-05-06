@@ -258,6 +258,22 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           font-size: 9px;
           line-height: 15px;
         }
+        .card-owner {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 65%;
+        }
+        .card-area {
+          color: var(--vscode-descriptionForeground);
+          opacity: 0.8;
+          font-size: 10px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 50%;
+          text-align: right;
+        }
         .card-badge-follow {
           display: inline-block;
           padding: 0 4px;
@@ -434,6 +450,16 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         let savedListHtml = savedState.savedListHtml || '';
         let hasMoreData = true;
 
+        /**
+         * 登录状态标记（持久化存储）
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：新增 loggedIn 状态持久化，解决 Webview 重建后登录/退出按钮状态丢失问题。
+         *          后端也会在恢复登录态后主动推送 updateLoginStatus 消息，双重保障 UI 一致性。
+         */
+        let loggedIn = savedState.loggedIn || false;
+
         /** 保存关键状态到 VSCode 持久化存储 */
         function saveState() {
           vscodeApi.setState({
@@ -442,6 +468,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             playerMediaType,
             viewCache,
             savedListHtml,
+            loggedIn,
           });
         }
 
@@ -490,6 +517,23 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           }
           // 保存恢复后的状态
           saveState();
+        }
+
+        /**
+         * 修复：从持久化状态恢复登录按钮的可见性
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：解决 Webview 重建后登录/退出按钮状态与实际登录态不一致的问题。
+         *          在 DOM 就绪后，根据持久化的 loggedIn 状态设置按钮初始可见性，
+         *          同时后端 _restoreSession 完成后也会推送 updateLoginStatus 消息进行二次确认。
+         */
+        if (loggedIn) {
+          menuLogin.classList.add('hidden');
+          menuLogout.classList.remove('hidden');
+        } else {
+          menuLogin.classList.remove('hidden');
+          menuLogout.classList.add('hidden');
         }
 
         // ==================== 设置菜单事件 ====================
@@ -550,13 +594,21 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           settingsMenu.classList.remove('show');
         });
 
-        /** 清理缓存按钮（设置菜单内） */
+        /**
+         * 清理缓存按钮（设置菜单内）
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：清理缓存时保留 loggedIn 状态，避免清理缓存后登录按钮状态丢失。
+         *          原实现使用 vscodeApi.setState({}) 清空所有状态，会误删登录态标记。
+         */
         const menuClearCache = document.getElementById('menu-clear-cache');
         menuClearCache.addEventListener('click', () => {
-          // 清空前端缓存
+          // 清空前端视图缓存
           Object.keys(viewCache).forEach(key => { viewCache[key] = ''; });
           savedListHtml = '';
-          vscodeApi.setState({});
+          // 重置视图状态，但保留登录状态（loggedIn 不应随缓存清理而丢失）
+          vscodeApi.setState({ loggedIn });
           // 重置视图状态
           contentEl.innerHTML = '<div class="status-area"><div class="icon">✅</div><div class="msg">缓存已清理，刷新中...</div></div>';
           settingsMenu.classList.remove('show');
@@ -805,18 +857,36 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         /**
          * 构建直播卡片 HTML
          */
+        /**
+         * 构建直播卡片 HTML
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：调整直播间卡片布局为三行展示：
+         *   第一行：直播间标题
+         *   第二行：主播名称（左对齐）
+         *   第三行：人气值（左对齐）+ 所属分区（右对齐）
+         */
         function buildLiveCards(lives) {
           let html = '';
           lives.forEach(l => {
             const onlineStr = formatCount(l.online || 0);
+            // 分区信息：优先展示"父分区 > 子分区"，无分区时显示空
+            const areaParts = [];
+            if (l.parentAreaName) { areaParts.push(l.parentAreaName); }
+            if (l.areaName) { areaParts.push(l.areaName); }
+            const areaText = areaParts.length > 0 ? areaParts.join(' · ') : '';
             html += '<div class="card" data-room-id="' + l.roomId + '" onclick="clickLive(this)">';
             html += '<img class="card-cover" src="' + ensureHttps(escapeHtml(l.cover)) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.src=&#39;data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2290%22 height=%2256%22><rect fill=%22%23eee%22 width=%2290%22 height=%2256%22/></svg>&#39;" />';
             html += '<div class="card-info">';
             html += '<div class="card-title">' + escapeHtml(l.title) + '</div>';
             html += '<div class="card-meta">';
-            html += '<span>' + escapeHtml(l.owner) + '</span>';
+            html += '<span class="card-owner">' + escapeHtml(l.owner) + '</span>';
             html += '<span class="card-badge-live">● LIVE</span>';
+            html += '</div>';
+            html += '<div class="card-meta">';
             html += '<span>' + onlineStr + '人气</span>';
+            html += '<span class="card-area">' + escapeHtml(areaText) + '</span>';
             html += '</div></div></div>';
           });
           return html;
@@ -1176,8 +1246,14 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         /**
          * 更新登录状态 UI
          *
-         * 仅更新登录/退出按钮的可见性，不切换视图。
+         * 更新登录/退出按钮的可见性，并同步持久化 loggedIn 状态。
          * 首次登录成功后跳转到推荐视频由 loginSuccess 消息单独处理。
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：新增 loggedIn 变量同步和 saveState() 调用，
+         *          确保登录状态变化时持久化存储也同步更新，
+         *          Webview 重建后能从缓存恢复正确的登录按钮状态。
          *
          * @param {Object} msg - 消息对象
          * @param {boolean} msg.loggedIn - 是否已登录
@@ -1188,10 +1264,15 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           if (msg.loggedIn === true) {
             menuLogin.classList.add('hidden');
             menuLogout.classList.remove('hidden');
+            loggedIn = true;
           } else if (msg.loggedIn === false) {
             menuLogin.classList.remove('hidden');
             menuLogout.classList.add('hidden');
+            loggedIn = false;
           }
+
+          // 同步持久化登录状态，确保 Webview 重建后可恢复
+          saveState();
 
           // 更新登录 QR 码区域的提示文字
           const tips = document.getElementById('login-tips');
