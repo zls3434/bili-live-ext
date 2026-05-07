@@ -1,4 +1,3 @@
-import axios from 'axios';
 import { BaseBiliApiService } from './baseBiliApi';
 import { SessionManager } from './sessionManager';
 import { MediaInfo } from '../types';
@@ -53,7 +52,7 @@ export class VideoApiService extends BaseBiliApiService {
 
   async getVideoDanmaku(oid: number, segmentIndex: number = 1): Promise<string> {
     try {
-      const response = await axios.get('https://api.bilibili.com/x/v1/dm/list.so', {
+      const response = await this.axiosInstance.get('https://api.bilibili.com/x/v1/dm/list.so', {
         params: { oid, segment_index: segmentIndex },
         responseType: 'text',
       });

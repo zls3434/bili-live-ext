@@ -209,6 +209,9 @@ export class FollowApiService extends BaseBiliApiService {
     }
 
     try {
+      // 重要：此 API 要求不携带 Cookie，不能使用 this.axiosInstance（会被拦截器自动注入 Cookie）。
+      // 使用 axios 直接调用，仅设置必要的请求头，不携带任何 Cookie。
+      // POST 请求体使用 PHP 数组参数格式（uids[]=1&uids[]=2），而非 JSON 数组格式。
       const body = mids.map(mid => `uids[]=${encodeURIComponent(mid)}`).join('&');
       const response = await axios.post(
         'https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids',

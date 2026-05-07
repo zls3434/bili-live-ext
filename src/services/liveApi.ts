@@ -102,6 +102,11 @@ export class LiveApiService extends BaseBiliApiService {
         params.w_rid = this._generateWbiSign(params);
       }
 
+      // getDanmuInfo API 对请求头敏感：
+      // 携带浏览器 User-Agent 时，B站会检测 TLS 指纹（JA3/JA4），
+      // 如果 TLS 指纹与 User-Agent 不匹配，返回 -352 错误。
+      // 因此使用独立的 axios 请求（而非 this.axiosInstance），
+      // 只带 Cookie（获取真实 UID 绑定的 token），不带 Chrome User-Agent 和 Referer。
       const cookie = await this.sessionManager.getSession();
       const headers: Record<string, string> = {};
       if (cookie) {
