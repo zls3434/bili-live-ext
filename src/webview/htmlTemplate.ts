@@ -468,6 +468,15 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         }
         .follow-card .follow-info { flex: 1; min-width: 0; }
         .follow-card .follow-name { font-size: 12px; font-weight: 500; color: var(--vscode-foreground); }
+        /* 关注UP主有新视频时的红点标记 - 修改日期：2026-05-07 zls3434 新增 */
+        .follow-new-dot {
+          display: inline-block;
+          width: 6px; height: 6px;
+          background-color: #FE2C55;
+          border-radius: 50%;
+          margin-left: 4px;
+          vertical-align: middle;
+        }
       </style>
     </head>
     <body>
@@ -725,6 +734,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
          * 修改日期：2026-05-02
          * 修改人：zls3434
          * 修改目的：新增关注子Tab的点击切换逻辑，点击后在"关注列表/动态/直播中"之间切换
+         * 修改日期：2026-05-06
+         * 修改人：zls3434
+         * 修改目的：修复子Tab切换"有缓存"时不发送 switchView 消息导致前后端 currentView 不同步的 Bug。
+         *          表现为：从"关注直播中"进入直播间后退出，返回的是"关注动态"而非"关注直播中"。
+         *          根因：有缓存时仅前端更新 currentView，后端 _currentView 未同步更新，
+         *          导致 openLive 压入导航历史的是过时的 _currentView 值。
+         *          修复：无论有无缓存，都发送 switchView 消息（后端有防重复加载机制，不会浪费请求）
          *
          * 使用事件委托监听 follow-sub-tab 按钮的点击事件
          */
@@ -742,11 +758,27 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
               // 如果目标子视图有缓存则直接恢复，否则显示加载中并请求数据
               if (viewCache[subView]) {
                 contentEl.innerHTML = viewCache[subView];
+                /* 修复：有缓存时也要通知后端更新 _currentView，确保导航历史记录正确 */
+                vscodeApi.postMessage({ type: 'switchView', view: subView });
               } else {
                 showLoading();
                 vscodeApi.postMessage({ type: 'switchView', view: subView });
               }
             }
+          }
+
+          /**
+           * 返回关注列表按钮事件
+           *
+           * 修改日期：2026-05-07
+           * 修改人：zls3434
+           * 修改目的：发送 goBack 消息而非 switchView，确保后端能正确处理返回逻辑
+           *           （刷新关注列表红点状态等）
+           */
+          if (target && target.id === 'btn-back-to-follows') {
+            viewCache[currentView] = contentEl.innerHTML;
+            currentView = 'follows';
+            vscodeApi.postMessage({ type: 'goBack' });
           }
         });
 
@@ -762,6 +794,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
               exitPlayerMode();
               highlightTab(msg.view);
               currentView = msg.view;
+              /* 修改日期：2026-05-07 zls3434 修复：视图切换时重置 isLoadingMore 标志，
+                 避免从其他视图返回后因旧状态导致滚动加载失效 */
+              isLoadingMore = false;
               saveState();
 
               // 如果消息携带了列表数据，直接渲染并更新缓存
@@ -771,6 +806,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
               } else if (msg.view && viewCache[msg.view]) {
                 // 没有新数据但缓存中有内容，恢复缓存
                 contentEl.innerHTML = viewCache[msg.view];
+              } else if (msg.view) {
+                /* 修改日期：2026-05-07 zls3434 修复：既没有数据也没有缓存时显示加载中状态，避免用户看到旧界面以为'点击没反应' */
+                showLoading();
               }
               break;
 
@@ -779,6 +817,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
               if (msg.view === currentView && !isPlayerMode) {
                 renderListByView(msg.view, msg.data, msg.error);
                 hasMoreData = msg.hasMore !== false;
+                /* 修改日期：2026-05-07 zls3434 修复：重置 isLoadingMore 标志，
+                   避免从UP主视频列表返回后滚动加载失效（旧请求的 appendListData 被忽略后 isLoadingMore 未重置） */
+                isLoadingMore = false;
                 viewCache[msg.view] = contentEl.innerHTML;
                 saveState();
               }
@@ -866,6 +907,10 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
               break;
             case 'followsLive':
               renderFollowsLive(data);
+              break;
+            /* 修改日期：2026-05-07 zls3434 新增 followsUpVideos 视图渲染分支，用于展示关注UP主的视频列表 */
+            case 'followsUpVideos':
+              renderFollowsUpVideos(data);
               break;
             case 'favorites':
               renderFavoriteFolders(data);
@@ -1024,14 +1069,49 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         }
 
         /**
+         * 渲染"关注UP主视频列表"视图
+         *
+         * 修改日期：2026-05-07
+         * 修改人：zls3434
+         * 修改目的：新增渲染函数，展示某个UP主的视频列表，包含返回按钮和UP主信息头部。
+         *          点击返回按钮切换回关注列表视图。
+         *
+         * @param {Object} data - UP主视频数据，包含 mid、uname、face、videos 等字段
+         */
+        function renderFollowsUpVideos(data) {
+          let html = '<div class="follow-up-header">';
+          html += '<button class="follow-sub-tab" id="btn-back-to-follows">◂ 返回</button>';
+          /* UP主头像和名称 */
+          if (data.face) {
+            html += '<img class="follow-avatar" src="' + ensureHttps(escapeHtml(data.face)) + '" alt="" style="width:24px;height:24px;border-radius:50%;margin-left:8px;flex-shrink:0;" referrerpolicy="no-referrer" onerror="this.style.display=&#39;none&#39;" />';
+          }
+          html += '<span style="margin-left:6px;font-weight:600;font-size:13px;color:var(--vscode-foreground);">' + escapeHtml(data.uname || 'UP主') + ' 的视频</span>';
+          html += '</div>';
+          html += '<div class="card-list">' + buildVideoCards(data.videos || []) + '</div>';
+          contentEl.innerHTML = html;
+        }
+
+        /**
          * 构建关注卡片 HTML
+         *
+         * 修改日期：2026-05-07
+         * 修改人：zls3434
+         * 修改目的：增强关注卡片渲染，新增红点标记（hasNewVideo 时显示）和整卡点击跳转功能。
+         *          点击卡片时发送 clickFollowUp 消息（携带 mid、uname、face），
+         *          LIVE 标记的点击仍通过 stopPropagation 独立处理，不受整卡点击影响。
          */
         function buildFollowCards(followItems) {
           let html = '';
           followItems.forEach(f => {
-            html += '<div class="follow-card">';
+            /* 整卡可点击，通过 data 属性携带 mid、uname、face 信息 */
+            html += '<div class="follow-card" data-mid="' + f.mid + '" data-uname="' + escapeHtml(f.uname) + '" data-face="' + ensureHttps(escapeHtml(f.face)) + '" onclick="clickFollowUp(this)">';
             html += '<img class="follow-avatar" src="' + ensureHttps(escapeHtml(f.face)) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display=none" />';
-            html += '<div class="follow-info"><span class="follow-name">' + escapeHtml(f.uname) + '</span></div>';
+            html += '<div class="follow-info"><span class="follow-name">' + escapeHtml(f.uname);
+            /* 当 UP 主有新视频时，名称旁显示红色圆点 */
+            if (f.hasNewVideo) {
+              html += '<span class="follow-new-dot"></span>';
+            }
+            html += '</span></div>';
             if (f.liveRoom) {
               html += '<span class="card-badge-live" style="cursor:pointer" data-room-id="' + f.liveRoom.roomId + '" onclick="event.stopPropagation();clickLive(this)">● LIVE</span>';
             } else {
@@ -1408,6 +1488,23 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           }
         }
 
+        /**
+         * 点击关注UP主卡片，跳转到该UP主的视频列表视图
+         *
+         * 修改日期：2026-05-07
+         * 修改人：zls3434
+         * 修改目的：新增关注卡片点击事件处理函数，点击后发送 clickFollowUp 消息给扩展主进程，
+         *          扩展侧会请求该UP主的视频列表数据并推送回前端渲染 followsUpVideos 视图。
+         *
+         * @param {HTMLElement} el - 被点击的关注卡片 DOM 元素，需包含 data-mid、data-uname、data-face 属性
+         */
+        function clickFollowUp(el) {
+          const mid = parseInt(el.dataset.mid, 10);
+          const uname = el.dataset.uname;
+          const face = el.dataset.face;
+          vscodeApi.postMessage({ type: 'clickFollowUp', mid, uname, face });
+        }
+
         // ==================== UI 辅助 ====================
 
         function showLoading() {
@@ -1420,6 +1517,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
          * 修改日期：2026-05-02
          * 修改人：zls3434
          * 修改目的：新增 followsVideos 和 followsLive 视图的追加数据支持
+         * 修改日期：2026-05-07
+         * 修改人：zls3434
+         * 修改目的：新增 followsUpVideos 视图的追加数据支持，复用视频卡片构建函数
          *
          * @param {string} view - 视图类型
          * @param {Array} data - 新数据数组
@@ -1436,6 +1536,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           switch (view) {
             case 'recommendedVideos':
             case 'followsVideos':
+            case 'followsUpVideos':
             case 'favorites':
               html = buildVideoCards(data);
               break;
@@ -1464,11 +1565,14 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
          * 修改日期：2026-05-02
          * 修改人：zls3434
          * 修改目的：支持子视图高亮逻辑，followsVideos 和 followsLive 视图高亮"我的关注"主Tab
+         * 修改日期：2026-05-07
+         * 修改人：zls3434
+         * 修改目的：新增 followsUpVideos 视图的高亮逻辑，也高亮"我的关注"主Tab
          *
          * @param {string} view - 视图类型
          */
         function highlightTab(view) {
-          const mainView = (view === 'followsLive' || view === 'follows') ? 'followsVideos' : view;
+          const mainView = (view === 'followsLive' || view === 'follows' || view === 'followsUpVideos') ? 'followsVideos' : view;
           tabBar.querySelectorAll('.tab-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.view === mainView);
           });

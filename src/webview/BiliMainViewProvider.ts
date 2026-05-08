@@ -35,6 +35,7 @@ import { logger } from '../utils/logger';
 import * as QRCode from 'qrcode';
 import { VideoDanmakuTracker } from './videoDanmakuTracker';
 import { ViewDataLoader } from './viewDataLoader';
+import { ViewHistoryManager } from '../services/viewHistoryManager';
 import { DanmakuPanelProvider } from './DanmakuPanelProvider';
 import { getWebviewHtml } from './htmlTemplate';
 
@@ -91,6 +92,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     follows: { page: 1, hasMore: true, loading: false },
     followsVideos: { page: 1, hasMore: true, loading: false },
     followsLive: { page: 1, hasMore: true, loading: false },
+    followsUpVideos: { page: 1, hasMore: true, loading: false },
     favorites: { page: 1, hasMore: true, loading: false },
     recommendedVideos: { page: 1, hasMore: true, loading: false },
     recommendedLives: { page: 1, hasMore: true, loading: false },
@@ -98,6 +100,15 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
   /** 当前收藏夹 ID（用于收藏夹视频的分页加载） */
   private _currentFavoriteId: number = 0;
+
+  /**
+   * 查看历史管理器实例，用于追踪用户查看UP主视频列表的时间戳
+   *
+   * 修改日期：2026-05-07
+   * 修改人：zls3434
+   * 修改目的：新增关注列表红点提醒功能，需要记录用户查看各UP主视频列表的时间
+   */
+  private readonly viewHistoryManager: ViewHistoryManager;
 
   /** 会话管理器实例，持久化登录态 */
   private readonly sessionManager: SessionManager;
@@ -148,9 +159,12 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     // 弹幕输出已迁移至独立弹幕面板，此处暂留 OutputChannelManager.getInstance() 仅供 ViewDataLoader 使用
     const outputChannelManager = OutputChannelManager.getInstance();
     this._danmakuTracker = new VideoDanmakuTracker(this.danmakuService, this.apiService);
+    /* 创建查看历史管理器，用于关注列表红点提醒功能 */
+    this.viewHistoryManager = new ViewHistoryManager(context);
     this._viewDataLoader = new ViewDataLoader({
       apiService: this.apiService,
       danmakuService: this.danmakuService,
+      viewHistoryManager: this.viewHistoryManager,
       outputChannelManager: outputChannelManager,
       postMessage: (msg) => this._postMessage(msg),
       pageState: this._pageState,
@@ -557,11 +571,25 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       // 断开直播弹幕连接并清空输出通道
       this._disconnectDanmaku();
 
-      // 通知 Webview 切回列表视图（不重新加载数据，前端已有缓存内容）
-      this._postMessage({
-        type: 'showList',
-        view: previousView,
-      });
+      /**
+       * 修改日期：2026-05-07
+       * 修改人：zls3434
+       * 修改目的：从UP主视频列表返回关注列表时，仅重算红点排序，不重新获取数据
+       */
+      if (previousView === ContentView.follows) {
+        /* 从UP主视频列表返回关注列表：仅重算红点排序（不重新获取网络数据） */
+        await this._viewDataLoader.reorderFollowsCache();
+        this._resetPageState(ContentView.follows);
+        this._viewHasData['follows'] = false;
+        this._postMessage({ type: 'showList', view: previousView });
+        await this._loadViewData(ContentView.follows);
+      } else {
+        // 通知 Webview 切回列表视图（不重新加载数据，前端已有缓存内容）
+        this._postMessage({
+          type: 'showList',
+          view: previousView,
+        });
+      }
     }
   }
 
@@ -640,6 +668,34 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               await this.openLive(roomId);
               break;
             }
+            /**
+             * 点击关注列表中的UP主，进入其视频列表视图
+             *
+             * 修改日期：2026-05-07
+             * 修改人：zls3434
+             * 修改目的：新增消息处理，支持从关注列表点击进入UP主视频列表
+             */
+            case 'clickFollowUp': {
+              const upMid = message.mid as number;
+              const upUname = message.uname as string;
+              const upFace = message.face as string;
+
+              /* 将当前视图（关注列表）压入导航历史，以便返回时恢复 */
+              this._navigationHistory.push(this._currentView);
+
+              /* 设置当前UP主信息，供 ViewDataLoader 加载数据时使用 */
+              this._viewDataLoader.currentUpMid = upMid;
+              this._viewDataLoader.currentUpInfo = { mid: upMid, uname: upUname, face: upFace };
+
+              /* 记录用户查看该UP主视频列表的时间戳（用于红点提醒判定） */
+              await this.viewHistoryManager.setViewTime(upMid);
+
+              /* 切换到UP主视频列表视图 */
+              this._currentView = ContentView.followsUpVideos;
+              this._postMessage({ type: 'navigateTo', view: ContentView.followsUpVideos });
+              await this._loadViewData(ContentView.followsUpVideos);
+              break;
+            }
             case 'goBack': {
               await this.goBack();
               break;
@@ -671,6 +727,10 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
             }
             case 'refresh': {
               const refreshView = message.view as ContentView;
+              /* 刷新关注列表时清除排序缓存，强制完整重新获取 */
+              if (refreshView === ContentView.follows) {
+                this._viewDataLoader.clearFollowsCache();
+              }
               this._viewHasData[Object.keys(ContentView).find(k => ContentView[k as keyof typeof ContentView] === refreshView) || ''] = false;
               this._resetPageState(refreshView);
               await this._loadViewData(refreshView);
@@ -757,6 +817,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     follows: false,
     followsVideos: false,
     followsLive: false,
+    followsUpVideos: false,
     favorites: false,
     recommendedVideos: false,
     recommendedLives: false,

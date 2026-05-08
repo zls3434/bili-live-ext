@@ -111,6 +111,7 @@ export interface FollowGroup {
  * 修改人：zls3434
  * 修改目的：新增 followsVideos（关注动态）和 followsLive（关注直播中）两个子视图，
  *          用于在"我的关注"视图下提供子 Tab 切换功能
+ * @modification 2026-05-07 zls3434 新增 followsUpVideos 视图，用于展示某个UP主的视频列表
  */
 export enum ContentView {
   /** 关注内容视图（关注UP主列表） */
@@ -119,12 +120,31 @@ export enum ContentView {
   followsVideos = 'followsVideos',
   /** 关注直播中视图（正在直播的关注UP主列表） */
   followsLive = 'followsLive',
+  /** 关注UP主视频列表视图（某个UP主发布的视频列表） */
+  followsUpVideos = 'followsUpVideos',
   /** 收藏内容视图 */
   favorites = 'favorites',
   /** 推荐视频视图 */
   recommendedVideos = 'recommendedVideos',
   /** 推荐直播视图 */
   recommendedLives = 'recommendedLives',
+}
+
+/**
+ * 关注UP主视频列表视图数据
+ *
+ * 描述点击关注列表中某个UP主后，展示该UP主视频列表所需的数据
+ * 通过 mid 字段与关注列表中的UP主建立关联
+ */
+export interface FollowUpVideoViewData {
+  /** UP主用户 ID，B站用户的唯一标识 */
+  mid: number;
+  /** UP主名称 */
+  uname: string;
+  /** UP主头像 URL */
+  face: string;
+  /** UP主发布的视频列表 */
+  videos: VideoInfo[];
 }
 
 /**
