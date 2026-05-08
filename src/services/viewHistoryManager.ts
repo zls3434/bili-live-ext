@@ -107,6 +107,8 @@ export class ViewHistoryManager {
    * @modification 2026-05-07 zls3434 优化：改为直接通过 globalState 批量读取，避免逐个异步调用
    */
   async getViewTimesBatch(mids: number[]): Promise<Record<number, number>> {
+    /* 在循环外部一次性获取 initTime，确保所有无记录的 mid 使用相同的回退值
+     * getInitTime 仅首次调用时可能创建新值，后续调用直接返回已有值 */
     const initTime = await this.getInitTime();
     const result: Record<number, number> = {};
 
