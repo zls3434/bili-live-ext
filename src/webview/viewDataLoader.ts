@@ -22,6 +22,12 @@
  *           2. 新增 _loadFollowsUpVideosData 私有方法，调用 getUserVideos API 获取UP主视频列表
  *           3. 在 loadViewData 中新增 ContentView.followsUpVideos 分支
  *           4. 响应数据中合并 currentUpInfo（mid/uname/face）与 videos，供前端渲染UP主信息栏
+ * @modification 2026-05-08 zls3434 收藏夹子标签模式后端改造：
+ *           1. ViewDataLoaderDeps 新增 getCurrentFavoriteId/setCurrentFavoriteId 回调
+ *           2. 新增 currentFavoriteId 公开属性，外部设置当前选中的收藏夹 ID
+ *           3. 重构 _loadFavoritesData：同时返回收藏夹列表和默认选中收藏夹的视频列表
+ *           4. 新增 _loadFavoriteVideos 私有方法，独立加载指定收藏夹的视频列表
+ *           5. loadViewData 中 favorites 分支新增分页加载支持（page>1 仅加载视频）
  */
 
 import { ContentView, LiveRoomInfo, VideoInfo } from '../types';
@@ -50,6 +56,32 @@ export interface ViewDataLoaderDeps {
   pageState: Record<string, PageState>;
   /** 各视图是否已有数据的标记映射 */
   viewHasData: Record<string, boolean>;
+  /**
+   * 获取当前选中的收藏夹 ID 的回调函数
+   *
+   * 返回 BiliMainViewProvider 中 _currentFavoriteId 的当前值，
+   * 用于收藏夹子标签模式下确定默认选中的收藏夹。
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：新增回调，支持收藏夹子标签模式
+   *
+   * @returns {number} 当前选中的收藏夹 ID，0 表示未选中
+   */
+  getCurrentFavoriteId: () => number;
+  /**
+   * 设置当前选中的收藏夹 ID 的回调函数
+   *
+   * 当 ViewDataLoader 确定（或需要更新）当前选中的收藏夹时调用，
+   * 会同步更新 BiliMainViewProvider 中的 _currentFavoriteId 及 globalState。
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：新增回调，支持收藏夹子标签模式
+   *
+   * @param {number} id - 要设置的收藏夹 ID
+   */
+  setCurrentFavoriteId: (id: number) => void;
 }
 
 export class ViewDataLoader {
@@ -67,6 +99,22 @@ export class ViewDataLoader {
   private pageState: Record<string, PageState>;
   /** 各视图是否已有数据的标记 */
   private viewHasData: Record<string, boolean>;
+  /**
+   * 获取当前选中的收藏夹 ID 的回调
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：新增回调引用，用于收藏夹子标签模式下获取当前选中的收藏夹 ID
+   */
+  private getCurrentFavoriteId: () => number;
+  /**
+   * 设置当前选中的收藏夹 ID 的回调
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：新增回调引用，用于收藏夹子标签模式下设置当前选中的收藏夹 ID
+   */
+  private setCurrentFavoriteId: (id: number) => void;
 
   /**
    * 当前查看的UP主 mid
@@ -85,6 +133,20 @@ export class ViewDataLoader {
    * 默认值为 null 表示未选择任何UP主。
    */
   currentUpInfo: { mid: number; uname: string; face: string } | null = null;
+
+  /**
+   * 当前选中的收藏夹 ID
+   *
+   * 用于收藏夹子标签模式下确定当前激活的收藏夹。
+   * 外部（BiliMainViewProvider）在用户点击收藏夹子标签时设置此值，
+   * 并同步调用 setCurrentFavoriteId 回调更新 BiliMainViewProvider 的状态。
+   * 默认值为 0 表示未选中任何收藏夹。
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：新增属性，支持收藏夹子标签模式
+   */
+  currentFavoriteId: number = 0;
 
   /**
    * 清除关注列表全局排序缓存
@@ -143,6 +205,15 @@ export class ViewDataLoader {
     this.postMessage = deps.postMessage;
     this.pageState = deps.pageState;
     this.viewHasData = deps.viewHasData;
+    /**
+     * 初始化收藏夹 ID 回调
+     *
+     * 修改日期：2026-05-08
+     * 修改人：zls3434
+     * 修改目的：新增依赖初始化，支持收藏夹子标签模式
+     */
+    this.getCurrentFavoriteId = deps.getCurrentFavoriteId;
+    this.setCurrentFavoriteId = deps.setCurrentFavoriteId;
   }
 
   private _markViewHasData(view: string): void {
@@ -161,7 +232,39 @@ export class ViewDataLoader {
         await this._loadFollowsLiveData();
         break;
       case ContentView.favorites:
-        await this._loadFavoritesData();
+        /**
+         * 收藏夹视图分页加载支持
+         *
+         * 修改日期：2026-05-08
+         * 修改人：zls3434
+         * 修改目的：
+         * - page > 1 时表示懒加载更多视频，仅调用 _loadFavoriteVideos 加载视频数据
+         * - page === 1 时走完整的 _loadFavoritesData 逻辑（收藏夹列表 + 默认收藏夹视频）
+         */
+        if (this.pageState['favorites'].page > 1) {
+          const favState = this.pageState['favorites'];
+          if (favState.loading) { break; }
+          /* 仅在当前已选中收藏夹 ID 时才加载更多视频 */
+          if (this.currentFavoriteId) {
+            favState.loading = true;
+            try {
+              const result = await this._loadFavoriteVideos(this.currentFavoriteId, favState.page);
+              favState.hasMore = result.hasMore;
+              this.postMessage({
+                type: 'appendListData',
+                view: ContentView.favorites,
+                data: result.videos,
+                hasMore: result.hasMore,
+              });
+            } catch (error) {
+              logger.error(`收藏夹视频分页加载失败: ${error}`);
+            } finally {
+              favState.loading = false;
+            }
+          }
+        } else {
+          await this._loadFavoritesData();
+        }
         break;
       case ContentView.recommendedVideos:
         await this._loadRecommendedVideosData();
@@ -429,32 +532,126 @@ export class ViewDataLoader {
     }
   }
 
+  /**
+   * 加载收藏夹视图数据
+   *
+   * 改造为收藏夹子标签模式，同时返回收藏夹列表和默认选中收藏夹的视频列表：
+   * 1. 获取收藏夹列表（folders）
+   * 2. 确定默认选中的收藏夹 ID：优先使用 currentFavoriteId（外部设置），
+   *    其次使用 getCurrentFavoriteId() 回调（从 BiliMainViewProvider 获取持久化值），
+   *    最后回退到列表中第一个收藏夹的 id
+   * 3. 如果有选中的收藏夹，同时加载该收藏夹的视频列表（第一页）
+   * 4. 发送合并数据：{ folders, currentFolderId, videos, hasMore }
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：改造收藏夹视图为子标签模式，同时返回收藏夹列表和选中收藏夹的视频
+   */
   private async _loadFavoritesData(): Promise<void> {
     const mid = await this.apiService.getMyMid();
     if (!mid) {
       this.postMessage({
         type: 'updateListData',
         view: ContentView.favorites,
-        data: [],
+        data: { folders: [], currentFolderId: 0, videos: [], hasMore: false },
         error: '请先登录后再查看收藏夹',
       });
       return;
     }
 
     try {
+      /* 步骤1：获取收藏夹列表 */
       const favorites = await this.apiService.getFavorites(mid);
+
+      if (favorites.length === 0) {
+        /* 没有收藏夹，直接返回空数据 */
+        this.postMessage({
+          type: 'updateListData',
+          view: ContentView.favorites,
+          data: { folders: [], currentFolderId: 0, videos: [], hasMore: false },
+        });
+        return;
+      }
+
+      /**
+       * 步骤2：确定默认选中的收藏夹 ID
+       *
+       * 优先级：
+       * 1. this.currentFavoriteId（外部通过 clickFavoriteTab 消息已设置）
+       * 2. getCurrentFavoriteId() 回调（从 BiliMainViewProvider 获取持久化的 lastFavoriteFolderId）
+       * 3. 收藏夹列表中第一个收藏夹的 id（兜底默认值）
+       */
+      let selectedId = this.currentFavoriteId;
+      if (!selectedId) {
+        selectedId = this.getCurrentFavoriteId();
+      }
+      /* 验证 selectedId 是否存在于收藏夹列表中，不存在则回退到第一个 */
+      const isValidId = favorites.some(f => f.id === selectedId);
+      if (!isValidId) {
+        selectedId = favorites[0].id;
+      }
+
+      /* 同步更新 currentFavoriteId 和回调，确保状态一致 */
+      this.currentFavoriteId = selectedId;
+      this.setCurrentFavoriteId(selectedId);
+
+      /* 步骤3：加载选中收藏夹的视频列表（第一页） */
+      const videoResult = await this.apiService.getFavoriteVideos(selectedId, 1, 20);
+      const videos = videoResult.list;
+      const videoHasMore = videoResult.hasMore;
+
+      /* 更新分页状态中的 hasMore 标记 */
+      const state = this.pageState['favorites'];
+      state.hasMore = videoHasMore;
+
+      this._markViewHasData('favorites');
+
+      /* 步骤4：发送合并数据：收藏夹列表 + 当前选中收藏夹的视频列表 */
       this.postMessage({
         type: 'updateListData',
         view: ContentView.favorites,
-        data: favorites,
+        data: {
+          folders: favorites,
+          currentFolderId: selectedId,
+          videos: videos,
+          hasMore: videoHasMore,
+        },
       });
     } catch (error) {
       this.postMessage({
         type: 'updateListData',
         view: ContentView.favorites,
-        data: [],
+        data: { folders: [], currentFolderId: 0, videos: [], hasMore: false },
         error: `获取收藏夹失败: ${error}`,
       });
+    }
+  }
+
+  /**
+   * 加载指定收藏夹的视频列表（私有方法）
+   *
+   * 独立于 _loadFavoritesData，供以下场景调用：
+   * - clickFavoriteTab 消息触发时，只需加载指定收藏夹的视频数据
+   * - favorites 视图分页加载更多（page > 1）时使用
+   *
+   * 调用 apiService.getFavoriteVideos 获取指定收藏夹的视频列表，
+   * 返回视频数据和 hasMore 标记。
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：新增方法，支持收藏夹子标签模式下独立加载收藏夹视频列表
+   *
+   * @param {number} mediaId - 收藏夹 ID（media_id）
+   * @param {number} page - 页码，从 1 开始
+   * @returns {Promise<{ videos: VideoInfo[]; hasMore: boolean }>} 视频列表和是否还有更多数据
+   */
+  private async _loadFavoriteVideos(mediaId: number, page: number): Promise<{ videos: VideoInfo[]; hasMore: boolean }> {
+    try {
+      const result = await this.apiService.getFavoriteVideos(mediaId, page, 20);
+      return { videos: result.list, hasMore: result.hasMore };
+    } catch (error) {
+      logger.error(`获取收藏夹视频失败: ${error}`);
+      return { videos: [], hasMore: false };
     }
   }
 

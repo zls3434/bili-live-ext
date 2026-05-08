@@ -19,6 +19,11 @@
  * @modification 2026-05-04 zls3434 重构：将弹幕追踪逻辑提取到 VideoDanmakuTracker，
  *               将数据加载逻辑提取到 ViewDataLoader，减少 BiliMainViewProvider 的职责
  * @modification 2026-05-06 zls3434 重构弹幕输出：从 OutputChannel 改为使用独立弹幕面板 DanmakuPanelProvider
+ * @modification 2026-05-08 zls3434 收藏夹子标签模式后端改造：
+ *               新增 lastFavoriteFolderId 的 globalState 读写方法；
+ *               新增 clickFavoriteTab 消息处理（切换收藏夹子标签/加载对应视频/持久化 ID）；
+ *               刷新收藏界面时清除收藏夹相关状态缓存；
+ *               ViewDataLoader 实例化新增 getCurrentFavoriteId/setCurrentFavoriteId 回调
  */
 
 import * as vscode from 'vscode';
@@ -102,6 +107,40 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
   private _currentFavoriteId: number = 0;
 
   /**
+   * 获取上次选中的收藏夹 ID
+   *
+   * 从 globalState 中读取用户上次浏览收藏时选中的收藏夹 ID，
+   * 用于收藏夹子标签模式下恢复用户的上次浏览位置。
+   * 默认值为 0 表示无记录（首次使用或缓存被清除）。
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：新增方法，支持收藏夹子标签模式下的收藏夹 ID 持久化
+   *
+   * @returns {number} 上次选中的收藏夹 ID，0 表示无记录
+   */
+  private _getLastFavoriteFolderId(): number {
+    return this.context.globalState.get('lastFavoriteFolderId', 0);
+  }
+
+  /**
+   * 保存当前选中的收藏夹 ID 到 globalState
+   *
+   * 当用户点击收藏夹子标签时调用，将当前选中的收藏夹 ID 持久化存储，
+   * 以便下次打开收藏视图时自动恢复到上次浏览的收藏夹。
+   *
+   * 修改日期：2026-05-08
+   * 修改人：zls3434
+   * 修改目的：新增方法，支持收藏夹子标签模式下的收藏夹 ID 持久化
+   *
+   * @param {number} id - 要保存的收藏夹 ID（media_id）
+   * @returns {Promise<void>}
+   */
+  private async _setLastFavoriteFolderId(id: number): Promise<void> {
+    await this.context.globalState.update('lastFavoriteFolderId', id);
+  }
+
+  /**
    * 查看历史管理器实例，用于追踪用户查看UP主视频列表的时间戳
    *
    * 修改日期：2026-05-07
@@ -169,6 +208,20 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       postMessage: (msg) => this._postMessage(msg),
       pageState: this._pageState,
       viewHasData: this._viewHasData,
+      /**
+       * 收藏夹子标签模式回调：获取/设置当前选中的收藏夹 ID
+       *
+       * 修改日期：2026-05-08
+       * 修改人：zls3434
+       * 修改目的：新增回调，使 ViewDataLoader 能读写 BiliMainViewProvider 中的收藏夹 ID 状态
+       */
+      getCurrentFavoriteId: () => this._currentFavoriteId,
+      setCurrentFavoriteId: (id: number) => {
+        this._currentFavoriteId = id;
+        this._setLastFavoriteFolderId(id).catch((err) => {
+          logger.error(`保存收藏夹 ID 到 globalState 失败: ${err}`);
+        });
+      },
     });
 
     // 启动时自动尝试恢复登录态（异步执行，不阻塞构造函数）
@@ -696,6 +749,38 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               await this._loadViewData(ContentView.followsUpVideos);
               break;
             }
+            /**
+             * 点击收藏夹子标签，切换到指定收藏夹并加载其视频列表
+             *
+             * 修改日期：2026-05-08
+             * 修改人：zls3434
+             * 修改目的：新增消息处理，支持收藏夹子标签模式下切换收藏夹
+             *
+             * 处理流程：
+             * 1. 接收前端传来的 mediaId（收藏夹 ID）
+             * 2. 更新 _currentFavoriteId 为新的收藏夹 ID
+             * 3. 将选中的收藏夹 ID 持久化到 globalState
+             * 4. 重置 favorites 分页状态（page=1），清除 viewHasData 标记
+             * 5. 加载指定收藏夹的视频列表
+             */
+            case 'clickFavoriteTab': {
+              const mediaId = message.mediaId as number;
+              /* 更新当前选中的收藏夹 ID */
+              this._currentFavoriteId = mediaId;
+              /* 同步设置到 ViewDataLoader，确保数据加载器知道当前选中的收藏夹 */
+              this._viewDataLoader.currentFavoriteId = mediaId;
+              /* 将收藏夹 ID 持久化存储，下次打开时自动恢复 */
+              this._setLastFavoriteFolderId(mediaId).catch((err) => {
+                logger.error(`保存收藏夹 ID 到 globalState 失败: ${err}`);
+              });
+              /* 重置分页状态：page 归 1，允许加载更多 */
+              this._resetPageState(ContentView.favorites);
+              /* 清除 favorites 视图的数据缓存标记，强制重新加载 */
+              this._viewHasData['favorites'] = false;
+              /* 加载指定收藏夹的视频列表 */
+              await this._loadViewData(ContentView.favorites);
+              break;
+            }
             case 'goBack': {
               await this.goBack();
               break;
@@ -730,6 +815,20 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               /* 刷新关注列表时清除排序缓存，强制完整重新获取 */
               if (refreshView === ContentView.follows) {
                 this._viewDataLoader.clearFollowsCache();
+              }
+              /**
+               * 刷新收藏界面时清除收藏夹相关缓存
+               *
+               * 修改日期：2026-05-08
+               * 修改人：zls3434
+               * 修改目的：收藏夹子标签模式下，刷新时需要重置当前选中收藏夹 ID，
+               *          确保重新加载时从 globalState 恢复或使用默认选中状态
+               */
+              if (refreshView === ContentView.favorites) {
+                /* 重置当前收藏夹 ID 为上次持久化保存的值（0 表示无记录） */
+                this._currentFavoriteId = this._getLastFavoriteFolderId();
+                /* 同步重置 ViewDataLoader 中的当前收藏夹 ID */
+                this._viewDataLoader.currentFavoriteId = this._currentFavoriteId;
               }
               this._viewHasData[Object.keys(ContentView).find(k => ContentView[k as keyof typeof ContentView] === refreshView) || ''] = false;
               this._resetPageState(refreshView);

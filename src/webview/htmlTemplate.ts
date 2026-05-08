@@ -14,6 +14,10 @@
  * @date 2026-05-04
  * @modification 2026-05-06 zls3434 新增直播模式底部媒体控制栏（播放/暂停、音量调整、静音），
  *              包含 CSS 样式、HTML 结构和 JS 交互逻辑
+ * @modification 2026-05-08 zls3434 收藏夹视图从"卡片列表"模式改为"子标签+视频列表"模式，
+ *              对接后端新数据格式 { folders, currentFolderId, videos, hasMore }，
+ *              新增 buildFavoriteSubTabs、renderFavorites 函数，
+ *              删除旧的 renderFavoriteFolders、clickFavorite 函数及 .fav-card 样式
  */
 
 import * as vscode from 'vscode';
@@ -402,27 +406,27 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* ========== 收藏夹列表特殊样式 ========== */
-        .fav-card {
-          display: flex;
-          gap: 8px;
-          padding: 8px 6px;
-          border-radius: 6px;
+        /* ========== 收藏夹子标签样式 ========== */
+        /* 修改日期：2026-05-08 zls3434 新增收藏夹子标签样式，替换原有 .fav-card 收藏夹卡片样式 */
+        /* 样式规则与 .follow-sub-tab 完全一致，使用独立 class 名避免样式耦合 */
+        .fav-sub-tab {
+          padding: 3px 10px;
+          border: none;
+          border-radius: 3px;
+          background: none;
+          color: var(--vscode-foreground);
           cursor: pointer;
-          transition: background-color 0.15s;
-          align-items: center;
+          font-size: 11px;
+          opacity: 0.7;
+          transition: opacity 0.15s, background-color 0.15s, color 0.15s;
         }
-        .fav-card:hover { background-color: var(--vscode-list-hoverBackground); }
-        .fav-card .fav-cover {
-          width: 48px; height: 48px;
-          border-radius: 4px;
-          object-fit: cover;
-          flex-shrink: 0;
-          background-color: var(--vscode-editor-background);
+        .fav-sub-tab:hover { opacity: 0.9; background-color: var(--vscode-toolbar-hoverBackground); }
+        .fav-sub-tab.active {
+          opacity: 1;
+          color: #FB7299;
+          font-weight: 600;
+          background-color: rgba(251, 114, 153, 0.1);
         }
-        .fav-card .fav-info { flex: 1; min-width: 0; }
-        .fav-card .fav-title { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .fav-card .fav-count { font-size: 10px; color: var(--vscode-descriptionForeground); }
 
         /* ========== 关注用户列表 ========== */
         /* 关注子Tab样式 - 修改日期：2026-05-02 zls3434 新增关注子Tab样式 */
@@ -540,6 +544,19 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
          */
         let loggedIn = savedState.loggedIn || false;
 
+        /**
+         * 当前选中的收藏夹 ID（持久化存储）
+         *
+         * 修改日期：2026-05-08
+         * 修改人：zls3434
+         * 修改目的：新增收藏夹子标签视图状态持久化，记录当前选中的收藏夹 ID。
+         *          切换收藏夹子标签时更新此值，Webview 重建后可从缓存恢复选中的收藏夹状态。
+         *          默认值为 0（表示尚未选中任何收藏夹，后端会设置默认的 currentFolderId）。
+         *
+         * @type {number}
+         */
+        let currentFavoriteId = savedState.currentFavoriteId || 0;
+
         /** 保存关键状态到 VSCode 持久化存储 */
         function saveState() {
           vscodeApi.setState({
@@ -549,6 +566,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             viewCache,
             savedListHtml,
             loggedIn,
+            currentFavoriteId,
           });
         }
 
@@ -687,8 +705,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           // 清空前端视图缓存
           Object.keys(viewCache).forEach(key => { viewCache[key] = ''; });
           savedListHtml = '';
-          // 重置视图状态，但保留登录状态（loggedIn 不应随缓存清理而丢失）
-          vscodeApi.setState({ loggedIn });
+          // 重置视图状态，但保留登录状态和收藏夹选中状态（loggedIn、currentFavoriteId 不应随缓存清理而丢失）
+          /* 修改日期：2026-05-08 zls3434 新增保留 currentFavoriteId，避免清理缓存后收藏夹选中状态丢失 */
+          vscodeApi.setState({ loggedIn, currentFavoriteId });
           // 重置视图状态
           contentEl.innerHTML = '<div class="status-area"><div class="icon">✅</div><div class="msg">缓存已清理，刷新中...</div></div>';
           settingsMenu.classList.remove('show');
@@ -768,6 +787,40 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           }
 
           /**
+           * 收藏夹子Tab点击事件处理
+           *
+           * 修改日期：2026-05-08
+           * 修改人：zls3434
+           * 修改目的：新增收藏夹子标签点击切换逻辑。
+           *          点击收藏夹子标签后：
+           *          1. 更新前端 currentFavoriteId 状态
+           *          2. 切换子标签的 active 激活状态
+           *          3. 清空视频列表区域并显示加载中状态
+           *          4. 发送 clickFavoriteTab 消息到后端，请求对应收藏夹的视频列表
+           *          5. 持久化保存 currentFavoriteId 状态
+           *
+           * 交互流程：用户点击收藏夹子标签 → 前端切换 UI 状态 → 后端加载视频列表 → updateListData 消息返回 → 前端渲染视频卡片
+           */
+          if (target.classList.contains('fav-sub-tab')) {
+            const favId = parseInt(target.dataset.favId, 10);
+            if (favId && favId !== currentFavoriteId) {
+              /* 更新当前选中的收藏夹 ID */
+              currentFavoriteId = favId;
+              /* 更新子标签激活状态：移除所有子标签的 active，为当前点击的标签添加 active */
+              contentEl.querySelectorAll('.fav-sub-tab').forEach(btn => btn.classList.remove('active'));
+              target.classList.add('active');
+              /* 清空视频列表区域，显示加载中状态 */
+              const cardList = contentEl.querySelector('.card-list');
+              if (cardList) {
+                cardList.innerHTML = '<div class="status-area"><div class="loading-spinner"></div><div class="msg">加载中...</div></div>';
+              }
+              /* 发送 clickFavoriteTab 消息到后端，请求对应收藏夹的视频列表数据 */
+              vscodeApi.postMessage({ type: 'clickFavoriteTab', mediaId: favId });
+            }
+            saveState();
+          }
+
+          /**
            * 返回关注列表按钮事件
            *
            * 修改日期：2026-05-07
@@ -816,7 +869,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             case 'updateListData':
               if (msg.view === currentView && !isPlayerMode) {
                 renderListByView(msg.view, msg.data, msg.error);
-                hasMoreData = msg.hasMore !== false;
+                /* 修改日期：2026-05-08 zls3434 修复：收藏夹视图的 hasMore 标记存储在 msg.data.hasMore 中（后端新数据格式），
+                   其他视图仍从 msg.hasMore 获取。需区分处理以避免收藏夹视图误判"还有更多数据" */
+                if (msg.view === 'favorites' && msg.data && typeof msg.data.hasMore !== 'undefined') {
+                  hasMoreData = msg.data.hasMore !== false;
+                } else {
+                  hasMoreData = msg.hasMore !== false;
+                }
                 /* 修改日期：2026-05-07 zls3434 修复：重置 isLoadingMore 标志，
                    避免从UP主视频列表返回后滚动加载失效（旧请求的 appendListData 被忽略后 isLoadingMore 未重置） */
                 isLoadingMore = false;
@@ -913,7 +972,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
               renderFollowsUpVideos(data);
               break;
             case 'favorites':
-              renderFavoriteFolders(data);
+              renderFavorites(data);
               break;
             case 'recommendedVideos':
               renderVideoList(data);
@@ -1123,18 +1182,66 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         }
 
         /**
-         * 渲染收藏夹列表
+         * 构建收藏夹子标签栏 HTML
+         *
+         * 修改日期：2026-05-08
+         * 修改人：zls3434
+         * 修改目的：新增收藏夹子标签栏构建函数，将收藏夹列表渲染为子标签按钮。
+         *          复用 .follow-sub-tabs 容器样式和 .fav-sub-tab 按钮样式，
+         *          通过 data-fav-id 属性携带收藏夹 ID，供点击事件委托使用。
+         *
+         * @param {Array} folders - 收藏夹列表数组，每项包含 id、title、cover、media_count 字段
+         * @param {number} activeId - 当前选中的收藏夹 ID，对应的标签将显示为激活状态
+         * @returns {string} 收藏夹子标签栏 HTML 片段
          */
-        function renderFavoriteFolders(folders) {
-          let html = '<div class="card-list">';
+        function buildFavoriteSubTabs(folders, activeId) {
+          let html = '<div class="follow-sub-tabs fav-sub-tabs">';
           folders.forEach(f => {
-            html += '<div class="fav-card" data-media-id="' + f.id + '" onclick="clickFavorite(this)">';
-            html += '<img class="fav-cover" src="' + ensureHttps(escapeHtml(f.cover)) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.src=&#39;data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22><rect fill=%22%23eee%22 width=%2248%22 height=%2248%22/></svg>&#39;" />';
-            html += '<div class="fav-info">';
-            html += '<div class="fav-title">' + escapeHtml(f.title) + '</div>';
-            html += '<div class="fav-count">' + (f.media_count || 0) + ' 个视频</div>';
-            html += '</div></div>';
+            /* data-fav-id 携带收藏夹 ID，class 同时包含 follow-sub-tab 和 fav-sub-tab 以复用样式 */
+            html += '<button class="follow-sub-tab fav-sub-tab' + (f.id === activeId ? ' active' : '') + '" data-fav-id="' + f.id + '">' + escapeHtml(f.title) + '</button>';
           });
+          html += '</div>';
+          return html;
+        }
+
+        /**
+         * 渲染收藏夹视图（子标签模式）
+         *
+         * 修改日期：2026-05-08
+         * 修改人：zls3434
+         * 修改目的：完全重写收藏夹视图渲染逻辑，从旧版"收藏夹卡片列表"模式改为"子标签+视频列表"模式。
+         *          后端新数据格式：{ folders, currentFolderId, videos, hasMore }
+         *          - folders: 收藏夹列表，渲染为顶部子标签栏
+         *          - currentFolderId: 当前选中的收藏夹 ID，同步到前端 currentFavoriteId 状态
+         *          - videos: 当前收藏夹的视频列表，复用 buildVideoCards 构建卡片
+         *          - hasMore: 是否还有更多视频（控制懒加载指示器显示）
+         *
+         * @param {Object} data - 收藏夹视图数据对象
+         * @param {Array} data.folders - 收藏夹列表，每项包含 id、title、cover、media_count
+         * @param {number} data.currentFolderId - 当前选中的收藏夹 ID
+         * @param {Array} data.videos - 当前收藏夹的视频列表
+         * @param {boolean} data.hasMore - 是否还有更多视频可加载
+         */
+        function renderFavorites(data) {
+          const { folders, currentFolderId, videos, hasMore: moreFlag } = data;
+
+          /* 同步后端返回的 currentFolderId 到前端全局状态 */
+          currentFavoriteId = currentFolderId;
+
+          /* 空收藏夹列表的兜底处理 */
+          if (!folders || folders.length === 0) {
+            contentEl.innerHTML = '<div class="status-area"><div class="icon">📭</div><div class="msg">暂无收藏夹</div></div>';
+            return;
+          }
+
+          /* 渲染子标签栏 */
+          let html = buildFavoriteSubTabs(folders, currentFolderId);
+          /* 渲染视频卡片列表 */
+          html += '<div class="card-list">' + buildVideoCards(videos || []);
+          /* 如有更多数据，添加懒加载指示器 */
+          if (moreFlag !== false) {
+            html += '<div id="load-more-indicator" class="status-area" style="display:none"><div class="loading-spinner"></div><span class="msg">加载更多...</span></div>';
+          }
           html += '</div>';
           contentEl.innerHTML = html;
         }
@@ -1479,15 +1586,6 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           }
         }
 
-        function clickFavorite(el) {
-          const mediaId = parseInt(el.dataset.mediaId, 10);
-          if (mediaId) {
-            contentEl.innerHTML = '<div class="status-area"><div class="loading-spinner"></div><div class="msg">加载收藏视频中...</div></div>';
-            // 收藏夹视频加载暂时使用占位逻辑，后续可扩展为真实请求
-            vscodeApi.postMessage({ type: 'clickFavorite', mediaId });
-          }
-        }
-
         /**
          * 点击关注UP主卡片，跳转到该UP主的视频列表视图
          *
@@ -1550,7 +1648,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           }
 
           // 追加到列表容器
-          const listContainer = contentEl.querySelector('.card-list') || contentEl.querySelector('.fav-card-list');
+          /* 修改日期：2026-05-08 zls3434 修复：收藏夹视图改用子标签模式后，容器统一为 .card-list，不再需要 .fav-card-list 选择器 */
+          const listContainer = contentEl.querySelector('.card-list');
           if (listContainer) {
             listContainer.insertAdjacentHTML('beforeend', html);
           } else {
