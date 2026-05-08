@@ -95,15 +95,26 @@ export class ViewHistoryManager {
    * @returns {Promise<Record<number, number>>}
    *          以 mid 为 key、查看时间戳为 value 的映射对象，所有值均非 null
    */
+  /**
+   * 批量获取多个UP主的查看时间
+   *
+   * 直接通过 globalState.get 同步读取所有键值，避免逐个调用异步的 getViewTime。
+   * 无查看记录的UP主使用 getInitTime() 返回的初始化时间作为回退值。
+   *
+   * @param {number[]} mids - UP主 mid 数组
+   * @returns {Promise<Record<number, number>>} 以 mid 为 key、查看时间戳（毫秒）为 value 的映射表
+   *
+   * @modification 2026-05-07 zls3434 优化：改为直接通过 globalState 批量读取，避免逐个异步调用
+   */
   async getViewTimesBatch(mids: number[]): Promise<Record<number, number>> {
-    // 获取初始化时间作为无记录时的回退值
     const initTime = await this.getInitTime();
     const result: Record<number, number> = {};
 
+    /* 直接构造 key 批量同步读取，避免逐个调用异步 getViewTime 带来的开销 */
     for (const mid of mids) {
-      const viewTime = await this.getViewTime(mid);
-      // 无查看记录则使用初始化时间
-      result[mid] = viewTime ?? initTime;
+      const key = `${FOLLOW_VIEW_TIME_PREFIX}${mid}`;
+      const value = this.context.globalState.get<number>(key);
+      result[mid] = value ?? initTime;
     }
 
     return result;
