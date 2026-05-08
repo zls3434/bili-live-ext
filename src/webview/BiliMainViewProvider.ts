@@ -211,15 +211,28 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
       /**
        * 收藏夹子标签模式回调：获取/设置当前选中的收藏夹 ID
        *
+       * getCurrentFavoriteId：同步返回当前内存中的 _currentFavoriteId 值
+       *
+       * setCurrentFavoriteId：同步更新内存状态，异步持久化到 globalState。
+       * 设计说明：该回调为同步签名 (id: number) => void，因为调用方 ViewDataLoader
+       * 在异步方法 _loadFavoritesData 中需要同步更新 currentFavoriteId 后立即使用，
+       * 无法等待异步持久化完成。globalState.update 在 VSCode 环境下极少失败，
+       * 即使持久化失败，最坏结果是下次打开时回退到默认收藏夹（首个），而非数据损坏。
+       * 若持久化失败，会记录错误日志并回滚内存状态，确保状态一致性。
+       *
        * 修改日期：2026-05-08
        * 修改人：zls3434
-       * 修改目的：新增回调，使 ViewDataLoader 能读写 BiliMainViewProvider 中的收藏夹 ID 状态
+       * 修改目的：新增回调，使 ViewDataLoader 能读写 BiliMainViewProvider 中的收藏夹 ID 状态；
+       *           增加持久化失败时的内存状态回滚机制，避免状态不一致
        */
       getCurrentFavoriteId: () => this._currentFavoriteId,
       setCurrentFavoriteId: (id: number) => {
+        const previousId = this._currentFavoriteId;
         this._currentFavoriteId = id;
         this._setLastFavoriteFolderId(id).catch((err) => {
-          logger.error(`保存收藏夹 ID 到 globalState 失败: ${err}`);
+          logger.error(`保存收藏夹 ID 到 globalState 失败: ${err}，回滚内存状态`);
+          /* 持久化失败时回滚内存状态，确保 _currentFavoriteId 与 globalState 一致 */
+          this._currentFavoriteId = previousId;
         });
       },
     });
