@@ -567,7 +567,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
        * 修改目的：新增视频观看浏览历史自动上报功能
        */
       this.apiService.reportVideoHistory(bvid, cid).catch((err) => {
-        logger.warn(`上报视频浏览历史失败（不影响播放）: ${err}`);
+        logger.warn(`上报视频浏览历史失败（bvid=${bvid}，不影响播放）: ${err instanceof Error ? err.message : err}`);
       });
 
       // 激活弹幕面板为视频模式（清空旧弹幕并更新面板标题）
@@ -632,7 +632,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
        * 修改目的：新增直播观看浏览历史自动上报功能
        */
       this.apiService.reportLiveHistory(roomId).catch((err) => {
-        logger.warn(`上报直播浏览历史失败（不影响观看）: ${err}`);
+        logger.warn(`上报直播浏览历史失败（roomId=${roomId}，不影响观看）: ${err instanceof Error ? err.message : err}`);
       });
 
       // 连接直播弹幕 WebSocket，实时输出弹幕
