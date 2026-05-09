@@ -18,6 +18,13 @@
  *              对接后端新数据格式 { folders, currentFolderId, videos, hasMore }，
  *              新增 buildFavoriteSubTabs、renderFavorites 函数，
  *              删除旧的 renderFavoriteFolders、clickFavorite 函数及 .fav-card 样式
+ * @modification 2026-05-09 zls3434 新增历史视图 UI：
+ *              新增"历史"主标签按钮和 historyVideos/historyLives 子视图渲染，
+ *              新增 buildHistorySubTabs、renderHistoryVideos、renderHistoryLives、
+ *              buildHistoryVideoCards、buildHistoryLiveCards 函数，
+ *              新增视频观看进度条和观看时间的 CSS 样式，
+ *              修改 highlightTab 支持 historyVideos/historyLives 高亮"历史"主标签，
+ *              修改 renderListByView 和 appendListData 支持历史视图渲染和数据追加
  */
 
 import * as vscode from 'vscode';
@@ -481,6 +488,41 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           margin-left: 4px;
           vertical-align: middle;
         }
+
+        /* ========== 历史视频进度条和观看时间样式 ========== */
+        /* 修改日期：2026-05-09 zls3434 新增历史视频卡片的进度条和观看时间样式 */
+        .card-cover-wrapper {
+          position: relative;
+          width: 90px;
+          height: 56px;
+          flex-shrink: 0;
+        }
+        .card-cover-wrapper img {
+          width: 100%;
+          height: 100%;
+          border-radius: 4px;
+          object-fit: cover;
+          background-color: var(--vscode-editor-background);
+        }
+        .card-progress-bar {
+          position: absolute;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          height: 3px;
+          background-color: rgba(255,255,255,0.3);
+          border-radius: 0 0 4px 4px;
+        }
+        .card-progress-bar-inner {
+          height: 100%;
+          background-color: #FB7299;
+          border-radius: 0 0 4px 4px;
+        }
+        .card-view-time {
+          font-size: 10px;
+          color: var(--vscode-descriptionForeground);
+          opacity: 0.8;
+        }
       </style>
     </head>
     <body>
@@ -493,6 +535,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           <button class="tab-btn" data-view="recommendedLives">直播</button>
           <button class="tab-btn" data-view="followsVideos">关注</button>
           <button class="tab-btn" data-view="favorites">收藏</button>
+          <button class="tab-btn" data-view="historyVideos">历史</button>
           <span class="tab-spacer"></span>
           <button class="refresh-btn" id="btn-refresh" title="刷新">↻</button>
           <button class="settings-btn" id="btn-settings" title="设置">⚙</button>
@@ -821,6 +864,32 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           }
 
           /**
+           * 历史子Tab点击事件处理
+           *
+           * 修改日期：2026-05-09
+           * 修改人：zls3434
+           * 修改目的：新增历史子标签点击切换逻辑，支持在视频和直播浏览历史之间切换
+           */
+          if (target.classList.contains('history-sub-tab')) {
+            const subView = target.dataset.subView;
+            if (subView && !isPlayerMode) {
+              /* 保存当前视图内容到缓存 */
+              viewCache[currentView] = contentEl.innerHTML;
+              /* 更新当前视图到历史子视图 */
+              currentView = subView;
+              /* 清空目标视图缓存，强制重新加载 */
+              viewCache[subView] = '';
+              /* 显示加载中状态，发送消息请求后端加载数据 */
+              showLoading();
+              vscodeApi.postMessage({ type: 'clickHistorySubTab', view: subView });
+              /* 更新子标签激活状态 */
+              contentEl.querySelectorAll('.history-sub-tab').forEach(btn => btn.classList.remove('active'));
+              target.classList.add('active');
+              saveState();
+            }
+          }
+
+          /**
            * 返回关注列表按钮事件
            *
            * 修改日期：2026-05-07
@@ -942,6 +1011,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
               contentEl.innerHTML = html;
               return;
             }
+            /* 修改日期：2026-05-09 zls3434 历史子视图的错误消息需要带子Tab栏 */
+            if (view === 'historyVideos' || view === 'historyLives') {
+              let html = buildHistorySubTabs(view);
+              html += '<div class="status-area"><div class="icon">😕</div><div class="msg">' + escapeHtml(errorMsg) + '</div></div>';
+              contentEl.innerHTML = html;
+              return;
+            }
             contentEl.innerHTML = '<div class="status-area"><div class="icon">😕</div><div class="msg">' + escapeHtml(errorMsg) + '</div></div>';
             return;
           }
@@ -950,6 +1026,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             if (view === 'followsVideos' || view === 'followsLive') {
               let html = buildFollowSubTabs(view);
               html += '<div class="status-area"><div class="icon">📭</div><div class="msg">暂无内容</div></div>';
+              contentEl.innerHTML = html;
+              return;
+            }
+            /* 修改日期：2026-05-09 zls3434 历史子视图的空数据需要带子Tab栏 */
+            if (view === 'historyVideos' || view === 'historyLives') {
+              let html = buildHistorySubTabs(view);
+              html += '<div class="status-area"><div class="icon">📭</div><div class="msg">暂无浏览历史</div></div>';
               contentEl.innerHTML = html;
               return;
             }
@@ -979,6 +1062,12 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
               break;
             case 'recommendedLives':
               renderLiveList(data);
+              break;
+            case 'historyVideos':
+              renderHistoryVideos(data);
+              break;
+            case 'historyLives':
+              renderHistoryLives(data);
               break;
           }
         }
@@ -1247,6 +1336,130 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         }
 
         /**
+         * 构建历史子Tab栏 HTML
+         *
+         * 修改日期：2026-05-09
+         * 修改人：zls3434
+         * 修改目的：新增历史子标签栏构建函数，提供"视频"和"直播"两个子标签按钮
+         *
+         * @param {string} activeView - 当前激活的子视图名称（historyVideos 或 historyLives）
+         * @returns {string} 子Tab栏 HTML
+         */
+        function buildHistorySubTabs(activeView) {
+          let html = '<div class="follow-sub-tabs">';
+          html += '<button class="follow-sub-tab history-sub-tab' + (activeView === 'historyVideos' ? ' active' : '') + '" data-sub-view="historyVideos">视频</button>';
+          html += '<button class="follow-sub-tab history-sub-tab' + (activeView === 'historyLives' ? ' active' : '') + '" data-sub-view="historyLives">直播</button>';
+          html += '</div>';
+          return html;
+        }
+
+        /**
+         * 渲染视频浏览历史视图
+         *
+         * 修改日期：2026-05-09
+         * 修改人：zls3434
+         * 修改目的：新增视频浏览历史渲染函数，展示带有观看进度条和观看时间的视频卡片列表
+         *
+         * @param {Array} items - 视频浏览历史条目数组，每项为 HistoryItem 对象
+         */
+        function renderHistoryVideos(items) {
+          let html = buildHistorySubTabs('historyVideos');
+          html += '<div class="card-list">' + buildHistoryVideoCards(items);
+          if (hasMoreData) { html += '<div id="load-more-indicator" class="status-area" style="display:none"><div class="loading-spinner"></div><span class="msg">加载更多...</span></div>'; }
+          html += '</div>';
+          contentEl.innerHTML = html;
+        }
+
+        /**
+         * 渲染直播浏览历史视图
+         *
+         * 修改日期：2026-05-09
+         * 修改人：zls3434
+         * 修改目的：新增直播浏览历史渲染函数，展示带有观看时间的直播卡片列表
+         *
+         * @param {Array} items - 直播浏览历史条目数组，每项为 HistoryItem 对象
+         */
+        function renderHistoryLives(items) {
+          let html = buildHistorySubTabs('historyLives');
+          html += '<div class="card-list">' + buildHistoryLiveCards(items);
+          if (hasMoreData) { html += '<div id="load-more-indicator" class="status-area" style="display:none"><div class="loading-spinner"></div><span class="msg">加载更多...</span></div>'; }
+          html += '</div>';
+          contentEl.innerHTML = html;
+        }
+
+        /**
+         * 构建视频浏览历史卡片 HTML（含观看进度条和观看时间）
+         *
+         * 修改日期：2026-05-09
+         * 修改人：zls3434
+         * 修改目的：新增视频历史卡片构建函数，在标准视频卡片基础上增加观看进度条和观看时间显示
+         *
+         * @param {Array} items - 视频浏览历史条目数组
+         * @returns {string} 视频历史卡片 HTML 字符串
+         */
+        function buildHistoryVideoCards(items) {
+          let html = '';
+          items.forEach(item => {
+            const durationStr = formatDuration(item.duration || 0);
+            const playStr = formatCount(item.playCount || 0);
+            const viewTimeStr = item.viewAtText || '';
+            /* 观看进度条：progress > 0 且不等于 -1 时显示进度条，-1 表示已看完 */
+            const showProgress = item.progress > 0 && item.progress !== -1;
+            const progressPercent = showProgress && item.duration > 0 ? Math.min((item.progress / item.duration) * 100, 100) : 0;
+            html += '<div class="card" data-bvid="' + escapeHtml(item.bvid) + '" onclick="clickVideo(this)">';
+            html += '<div class="card-cover-wrapper">';
+            html += '<img class="card-cover" src="' + ensureHttps(escapeHtml(item.cover)) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.src=&#39;data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2290%22 height=%2256%22><rect fill=%22%23eee%22 width=%2290%22 height=%2256%22/></svg>&#39;" />';
+            if (showProgress) {
+              html += '<div class="card-progress-bar"><div class="card-progress-bar-inner" style="width:' + progressPercent.toFixed(1) + '%"></div></div>';
+            }
+            html += '</div>';
+            html += '<div class="card-info">';
+            html += '<div class="card-title">' + escapeHtml(item.title) + '</div>';
+            html += '<div class="card-meta">';
+            html += '<span>' + (item.author ? escapeHtml(item.author) : '') + '</span>';
+            html += '<span>▶︎ ' + durationStr + '</span>';
+            html += '</div>';
+            html += '<div class="card-meta">';
+            html += '<span>' + playStr + '播放</span>';
+            html += '<span class="card-view-time">' + escapeHtml(viewTimeStr) + '</span>';
+            html += '</div>';
+            html += '</div></div>';
+          });
+          return html;
+        }
+
+        /**
+         * 构建直播浏览历史卡片 HTML（含观看时间）
+         *
+         * 修改日期：2026-05-09
+         * 修改人：zls3434
+         * 修改目的：新增直播历史卡片构建函数，在标准直播卡片基础上增加观看时间显示
+         *
+         * @param {Array} items - 直播浏览历史条目数组
+         * @returns {string} 直播历史卡片 HTML 字符串
+         */
+        function buildHistoryLiveCards(items) {
+          let html = '';
+          items.forEach(item => {
+            const onlineStr = '历史';
+            const viewTimeStr = item.viewAtText || '';
+            html += '<div class="card" data-room-id="' + item.roomId + '" onclick="clickLive(this)">';
+            html += '<img class="card-cover" src="' + ensureHttps(escapeHtml(item.cover)) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.src=&#39;data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2290%22 height=%2256%22><rect fill=%22%23eee%22 width=%2290%22 height=%2256%22/></svg>&#39;" />';
+            html += '<div class="card-info">';
+            html += '<div class="card-title">' + escapeHtml(item.title) + '</div>';
+            html += '<div class="card-meta">';
+            html += '<span class="card-owner">' + escapeHtml(item.author) + '</span>';
+            html += '<span class="card-badge-live" style="background-color:#999">历史</span>';
+            html += '</div>';
+            html += '<div class="card-meta">';
+            html += '<span>' + onlineStr + '</span>';
+            html += '<span class="card-view-time">' + escapeHtml(viewTimeStr) + '</span>';
+            html += '</div></div></div>';
+          });
+          return html;
+        }
+
+        /**
          * 渲染登录 QR 码视图
          */
         function renderLoginView(qrCodeDataUrl) {
@@ -1290,7 +1503,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             html += '<button class="player-ctrl-btn" id="ctrl-play-pause" title="播放/暂停">' + SVG_ICON_PAUSE + '</button>';
             html += '<button class="player-ctrl-btn" id="ctrl-volume-icon" title="静音">' + SVG_ICON_VOLUME_HIGH + '</button>';
             html += '<input type="range" class="player-volume-slider" id="ctrl-volume-slider" min="0" max="100" value="100" title="音量" />';
-            /* 修改日期：2026-05-06 qiweizhe 新增直播画面刷新按钮，用于卡顿时重新加载 */
+            /* 修改日期：2026-05-06 zls3434 新增直播画面刷新按钮，用于卡顿时重新加载 */
             html += '<span style="flex:1"></span>';
             html += '<button class="player-ctrl-btn" id="ctrl-refresh" title="刷新画面">' + SVG_ICON_REFRESH + '</button>';
             html += '</div>';
@@ -1310,7 +1523,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           // 初始化播放器
           setupPlayer(data);
 
-          /* 修改日期：2026-05-06 qiweizhe 保存播放器配置数据，供刷新按钮重新加载使用 */
+          /* 修改日期：2026-05-06 zls3434 保存播放器配置数据，供刷新按钮重新加载使用 */
           currentPlayerData = data;
         }
 
@@ -1318,7 +1531,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
          * 保存当前播放器的配置数据，用于刷新按钮重新加载
          *
          * 修改日期：2026-05-06
-         * 修改人：qiweizhe
+         * 修改人：zls3434
          * 修改目的：直播卡顿时点击刷新按钮需要重新调用 setupPlayer，
          *          但 data 对象在 enterPlayerMode 作用域内无法被 bindLiveMediaControls 访问，
          *          因此保存到模块级变量
@@ -1412,7 +1625,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         /* 静音图标：喇叭+叉号 */
         var SVG_ICON_VOLUME_MUTED = '<svg viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-2.74-1.41-5.16-3.56-6.59v2.06c1.34.94 2.24 2.47 2.56 4.03zM3 9v6h4l5 5V4L7 9H3z"/><path d="M18.17 4.77L4.77 18.17l1.42 1.42L19.59 6.18z"/></svg>';
         /* 刷新图标：圆形箭头（直播卡顿时重新加载画面用） */
-        /* 修改日期：2026-05-06 qiweizhe 新增直播画面刷新按钮图标 */
+        /* 修改日期：2026-05-06 zls3434 新增直播画面刷新按钮图标 */
         var SVG_ICON_REFRESH = '<svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
 
         /**
@@ -1505,7 +1718,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           videoEl.addEventListener('play', updatePlayPauseIcon);
           videoEl.addEventListener('pause', updatePlayPauseIcon);
 
-          /* 修改日期：2026-05-06 qiweizhe 新增刷新按钮事件：重新加载直播画面 */
+          /* 修改日期：2026-05-06 zls3434 新增刷新按钮事件：重新加载直播画面 */
           const refreshBtn = document.getElementById('ctrl-refresh');
           if (refreshBtn && currentPlayerData) {
             refreshBtn.addEventListener('click', () => {
@@ -1560,7 +1773,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           // 重置弹幕进度追踪状态
           lastPushedMs = -1;
 
-          /* 修改日期：2026-05-06 qiweizhe 清理保存的播放器配置数据 */
+          /* 修改日期：2026-05-06 zls3434 清理保存的播放器配置数据 */
           currentPlayerData = null;
 
           // 恢复之前保存的列表内容
@@ -1642,6 +1855,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             case 'followsLive':
               html = buildLiveCards(data);
               break;
+            /* 修改日期：2026-05-09 zls3434 新增历史视图的追加数据支持 */
+            case 'historyVideos':
+              html = buildHistoryVideoCards(data);
+              break;
+            case 'historyLives':
+              html = buildHistoryLiveCards(data);
+              break;
             case 'follows':
               html = buildFollowCards(data);
               break;
@@ -1671,7 +1891,12 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
          * @param {string} view - 视图类型
          */
         function highlightTab(view) {
-          const mainView = (view === 'followsLive' || view === 'follows' || view === 'followsUpVideos') ? 'followsVideos' : view;
+          let mainView = view;
+          if (view === 'followsLive' || view === 'follows' || view === 'followsUpVideos') {
+            mainView = 'followsVideos';
+          } else if (view === 'historyLives') {
+            mainView = 'historyVideos';
+          }
           tabBar.querySelectorAll('.tab-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.view === mainView);
           });

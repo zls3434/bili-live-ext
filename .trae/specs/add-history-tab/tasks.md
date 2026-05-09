@@ -1,0 +1,50 @@
+# Tasks
+
+- [x] Task 1: 新增 HistoryItem 类型定义和 ContentView 枚举扩展
+  - [x] 在 `src/types/index.ts` 中定义 `HistoryItem` 接口，包含 bvid、title、cover、author、mid、duration、playCount、viewAt、progress、type（archive/live/article）、cid、roomId 等字段
+  - [x] 在 `ContentView` 枚举中新增 `historyVideos = 'historyVideos'` 和 `historyLives = 'historyLives'`
+- [x] Task 2: 新增 HistoryApiService 服务类
+  - [x] 创建 `src/services/historyApi.ts`，继承 `BaseBiliApiService`
+  - [x] 实现 `getHistoryCursor` 方法：GET `/x/web-interface/history/cursor`，支持 `view_at` 游标分页、`type` 类型筛选（archive/live）、`ps` 每页条数
+  - [x] 实现 `reportVideoHistory` 方法：POST `/x/web-interface/history/report`，上报视频浏览记录，参数包含 bvid、cid、progress、csrf
+  - [x] 实现 `reportLiveHistory` 方法：POST `/x/web-interface/history/report`，上报直播浏览记录，参数包含 aid=roomId、type=2、csrf
+  - [x] 实现 `deleteHistoryItem` 方法：POST `/x/web-interface/history/delete`，删除单条历史记录
+  - [x] 为所有方法添加详细的 JSDoc 注释（包含修改日期、修改人、参数说明、返回值说明）
+- [x] Task 3: 集成 HistoryApiService 到 BiliApiService
+  - [x] 在 `src/services/biliApi.ts` 中导入并实例化 `HistoryApiService`
+  - [x] 暴露 `getHistoryCursor`、`reportVideoHistory`、`reportLiveHistory`、`deleteHistoryItem` 方法代理
+  - [x] 在 `src/services/index.ts` 中导出 `HistoryApiService`
+- [x] Task 4: 扩展 ViewDataLoader 支持历史视图数据加载（懒加载 + 浏览时间倒序）
+  - [x] 新增 `_loadHistoryVideosData` 方法：调用 `apiService.getHistoryCursor(type='archive')` 获取视频浏览历史。首次加载请求第一页（每页20条），使用游标分页（`pageState` 中复用 `feedOffset` 字段存储 `view_at` 游标值）。列表按浏览时间倒序排列（B站API默认返回倒序，无需前端额外排序）。滚动到底部时懒加载更多数据（`page` 递增、`view_at` 游标推进），直到 `hasMore` 为 false 停止
+  - [x] 新增 `_loadHistoryLivesData` 方法：调用 `apiService.getHistoryCursor(type='live')` 获取直播浏览历史。逻辑同上，列表按浏览时间倒序排列，懒加载机制相同
+  - [x] 在 `loadViewData` 方法中增加 `ContentView.historyVideos` 和 `ContentView.historyLives` 的分支
+  - [x] 刷新/首次进入时重置分页游标（清空 `feedOffset`/`view_at`）和 `hasMore` 标记，清空视图数据缓存标记
+  - [x] 为所有新增方法添加详细的 JSDoc 注释
+- [x] Task 5: 扩展 BiliMainViewProvider 支持历史视图
+  - [x] 在 `_pageState` 中增加 `historyVideos` 和 `historyLives` 的分页状态
+  - [x] 在 `_viewHasData` 中增加 `historyVideos` 和 `historyLives` 的缓存标记
+  - [x] 在消息处理中增加历史相关子标签切换消息处理
+  - [x] 在 `openVideo` 方法中增加浏览上报调用（异步执行，不阻塞播放流程）
+  - [x] 在 `openLive` 方法中增加浏览上报调用（异步执行，不阻塞播放流程）
+  - [x] 为所有新增代码添加详细的 JSDoc 注释
+- [x] Task 6: 扩展 htmlTemplate.ts 增加历史视图UI
+  - [x] 在主标签栏中增加"历史"标签按钮 `data-view="historyVideos"`
+  - [x] 新增历史子标签栏构建函数 `buildHistorySubTabs`（"视频"、"直播"两个子标签）
+  - [x] 新增 `renderHistoryVideos` 渲染函数，渲染视频历史卡片列表（含子标签栏）
+  - [x] 新增 `renderHistoryLives` 渲染函数，渲染直播历史卡片列表（含子标签栏）
+  - [x] 新增 `buildHistoryVideoCards` 函数，构建视频历史卡片HTML（含观看进度条和观看时间）
+  - [x] 新增 `buildHistoryLiveCards` 函数，构建直播历史卡片HTML（含观看时间）
+  - [x] 修改 `highlightTab` 函数，使 `historyLives` 视图也高亮"历史"主标签
+  - [x] 修改 `renderListByView` 函数，增加 `historyVideos` 和 `historyLives` 的渲染分支
+  - [x] 修改 `appendListData` 函数，增加历史视图的数据追加支持
+  - [x] 在子标签切换事件中增加历史子标签的点击事件委托
+  - [x] 为卡片的观看进度条添加 CSS 样式
+  - [x] 为观看时间文本添加 CSS 样式
+
+# Task Dependencies
+- Task 1 → Task 2（HistoryItem 类型定义被 HistoryApiService 使用）
+- Task 1 → Task 4（ContentView 枚举扩展被 ViewDataLoader 使用）
+- Task 2 → Task 3（HistoryApiService 需先定义再集成到 BiliApiService）
+- Task 3 → Task 4（ViewDataLoader 依赖 BiliApiService 暴露的方法）
+- Task 4 → Task 5（BiliMainViewProvider 依赖 ViewDataLoader 的数据加载）
+- Task 1 + Task 5 → Task 6（htmlTemplate 依赖 ContentView 枚举值和后端数据格式）

@@ -2,7 +2,7 @@
   "name": "bili-live-ext",
   "displayName": "bilibili",
   "description": "在 VSCode 中浏览 B站（bilibili）直播和视频",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "zls3434",
   "license": "MIT",
   "icon": "media/icon.png",

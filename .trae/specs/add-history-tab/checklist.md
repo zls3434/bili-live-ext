@@ -1,0 +1,27 @@
+- [x] 类型定义：HistoryItem 接口在 types/index.ts 中正确声明，包含所有必要字段（bvid、title、cover、author、mid、duration、playCount、viewAt、progress、type、cid、roomId 等）
+- [x] 枚举扩展：ContentView 新增 historyVideos 和 historyLives 值
+- [x] HistoryApiService.getHistoryCursor 方法正确实现游标分页（view_at 参数、type 过滤）
+- [x] HistoryApiService.reportVideoHistory 方法正确实现视频浏览上报（bvid、cid、progress、csrf 参数）
+- [x] HistoryApiService.reportLiveHistory 方法正确实现直播浏览上报（aid=roomId、type=2、csrf 参数）
+- [x] HistoryApiService 继承 BaseBiliApiService，自动复用 Cookie 注入和 CSRF Token 获取
+- [x] BiliApiService 正确实例化 HistoryApiService 并暴露所有方法代理
+- [x] ViewDataLoader._loadHistoryVideosData 正确调用 API 并处理游标分页（首次仅请求第一页，滚动到底部懒加载更多）
+- [x] ViewDataLoader._loadHistoryLivesData 正确调用 API 并处理游标分页（首次仅请求第一页，滚动到底部懒加载更多）
+- [x] 历史列表按浏览时间倒序排列（B站API默认返回倒序，无需前端额外排序验证）
+- [x] 懒加载机制正确：滚动到底部（距离底部50px内）时使用上次返回的 cursor.view_at 作为下一页游标，追加新数据到列表末尾
+- [x] ViewDataLoader.loadViewData 增加 historyVideos 和 historyLives 分支
+- [x] BiliMainViewProvider._pageState 增加 historyVideos 和 historyLives 状态
+- [x] BiliMainViewProvider._viewHasData 增加 historyVideos 和 historyLives 标记
+- [x] BiliMainViewProvider.openVideo 方法中增加浏览上报调用（异步不阻塞）
+- [x] BiliMainViewProvider.openLive 方法中增加浏览上报调用（异步不阻塞）
+- [x] 主标签栏增加"历史"按钮，data-view 属性正确
+- [x] 历史子标签栏渲染正确（视频/直播两个子标签）
+- [x] 视频历史卡片显示封面、标题、UP主、观看进度条、观看时间
+- [x] 直播历史卡片显示封面、标题、主播名称、观看时间
+- [x] 历史卡片点击事件正确跳转到视频播放或直播观看
+- [x] highlightTab 函数正确处理 historyVideos 和 historyLives 视图的高亮逻辑
+- [x] 历史列表滚动到底部自动加载更多（游标分页）
+- [x] 历史视图数据缓存和恢复逻辑正确（Tab 切换时保留状态）
+- [x] 所有新增代码文件包含文件头部注释说明（修改日期、修改人、修改目的）
+- [x] 所有新增方法包含 JSDoc 注释（功能描述、参数说明、返回值说明）
+- [x] 历史视图空数据时显示"暂无浏览历史"提示

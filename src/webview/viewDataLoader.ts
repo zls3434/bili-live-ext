@@ -28,9 +28,13 @@
  *           3. 重构 _loadFavoritesData：同时返回收藏夹列表和默认选中收藏夹的视频列表
  *           4. 新增 _loadFavoriteVideos 私有方法，独立加载指定收藏夹的视频列表
  *           5. loadViewData 中 favorites 分支新增分页加载支持（page>1 仅加载视频）
+ * @modification 2026-05-09 zls3434 新增历史视频和历史直播视图数据加载：
+ *           1. 新增 _loadHistoryVideosData 私有方法，调用 getHistoryCursor API 获取视频浏览历史，使用游标分页实现懒加载
+ *           2. 新增 _loadHistoryLivesData 私有方法，调用 getHistoryCursor API 获取直播浏览历史，使用游标分页实现懒加载
+ *           3. 在 loadViewData 中新增 ContentView.historyVideos 和 ContentView.historyLives 分支
  */
 
-import { ContentView, LiveRoomInfo, VideoInfo } from '../types';
+import { ContentView, LiveRoomInfo, VideoInfo, HistoryItem } from '../types';
 import { BiliApiService } from '../services/biliApi';
 import { DanmakuService } from '../services/danmakuService';
 import { ViewHistoryManager } from '../services/viewHistoryManager';
@@ -274,6 +278,12 @@ export class ViewDataLoader {
         if (this.currentUpMid) {
           await this._loadFollowsUpVideosData(this.currentUpMid);
         }
+        break;
+      case ContentView.historyVideos:
+        await this._loadHistoryVideosData();
+        break;
+      case ContentView.historyLives:
+        await this._loadHistoryLivesData();
         break;
       case ContentView.recommendedLives:
         await this._loadRecommendedLivesData();
@@ -743,5 +753,167 @@ export class ViewDataLoader {
     } finally {
       state.loading = false;
     }
+  }
+
+  /**
+   * 加载视频浏览历史数据（懒加载 + 浏览时间倒序）
+   *
+   * 调用B站浏览历史API获取视频类型的历史记录列表。
+   * 使用游标分页机制实现懒加载：首次加载请求第一页（每页20条），
+   * 滚动到底部时使用上次返回的 view_at 游标值请求下一页，
+   * 直到 hasMore 为 false 停止加载。
+   * 列表按浏览时间倒序排列（B站API默认返回倒序，无需前端额外排序）。
+   *
+   * 修改日期：2026-05-09
+   * 修改人：zls3434
+   * 修改目的：新增视频浏览历史数据加载，支持游标分页懒加载
+   */
+  private async _loadHistoryVideosData(): Promise<void> {
+    const state = this.pageState['historyVideos'];
+    if (state.loading) { return; }
+    state.loading = true;
+
+    try {
+      /* 使用 feedOffset 字段存储游标 view_at 值，实现懒加载分页 */
+      const viewAt = state.feedOffset ? parseInt(state.feedOffset, 10) : undefined;
+      const result = await this.apiService.getHistoryCursor(viewAt, 'archive', 20);
+
+      /* 为每条历史记录生成可读的观看时间文本 */
+      const items: HistoryItem[] = result.items.map(item => ({
+        ...item,
+        viewAtText: this._formatViewAtTime(item.viewAt),
+      }));
+
+      /* 更新分页状态：保存游标值用于下一页请求 */
+      state.hasMore = result.hasMore;
+      if (result.cursor.viewAt > 0) {
+        state.feedOffset = String(result.cursor.viewAt);
+      } else {
+        /* 游标为0表示没有更多数据 */
+        state.hasMore = false;
+      }
+
+      this._markViewHasData('historyVideos');
+
+      this.postMessage({
+        type: state.page === 1 ? 'updateListData' : 'appendListData',
+        view: ContentView.historyVideos,
+        data: items,
+        hasMore: result.hasMore,
+      });
+    } catch (error) {
+      this.postMessage({
+        type: 'updateListData',
+        view: ContentView.historyVideos,
+        data: [],
+        error: `获取视频浏览历史失败: ${error}`,
+        hasMore: false,
+      });
+    } finally {
+      state.loading = false;
+    }
+  }
+
+  /**
+   * 加载直播浏览历史数据（懒加载 + 浏览时间倒序）
+   *
+   * 调用B站浏览历史API获取直播类型的历史记录列表。
+   * 逻辑与 _loadHistoryVideosData 相同，区别在于 type 参数为 'live'。
+   * 同样使用游标分页实现懒加载，按浏览时间倒序排列。
+   *
+   * 修改日期：2026-05-09
+   * 修改人：zls3434
+   * 修改目的：新增直播浏览历史数据加载，支持游标分页懒加载
+   */
+  private async _loadHistoryLivesData(): Promise<void> {
+    const state = this.pageState['historyLives'];
+    if (state.loading) { return; }
+    state.loading = true;
+
+    try {
+      /* 使用 feedOffset 字段存储游标 view_at 值，实现懒加载分页 */
+      const viewAt = state.feedOffset ? parseInt(state.feedOffset, 10) : undefined;
+      const result = await this.apiService.getHistoryCursor(viewAt, 'live', 20);
+
+      /* 为每条历史记录生成可读的观看时间文本 */
+      const items: HistoryItem[] = result.items.map(item => ({
+        ...item,
+        viewAtText: this._formatViewAtTime(item.viewAt),
+      }));
+
+      /* 更新分页状态：保存游标值用于下一页请求 */
+      state.hasMore = result.hasMore;
+      if (result.cursor.viewAt > 0) {
+        state.feedOffset = String(result.cursor.viewAt);
+      } else {
+        state.hasMore = false;
+      }
+
+      this._markViewHasData('historyLives');
+
+      this.postMessage({
+        type: state.page === 1 ? 'updateListData' : 'appendListData',
+        view: ContentView.historyLives,
+        data: items,
+        hasMore: result.hasMore,
+      });
+    } catch (error) {
+      this.postMessage({
+        type: 'updateListData',
+        view: ContentView.historyLives,
+        data: [],
+        error: `获取直播浏览历史失败: ${error}`,
+        hasMore: false,
+      });
+    } finally {
+      state.loading = false;
+    }
+  }
+
+  /**
+   * 格式化浏览时间为可读文本
+   *
+   * 将秒级时间戳格式化为人类可读的时间描述：
+   * - 1小时内：x分钟前
+   * - 今天：今天 HH:mm
+   * - 昨天：昨天 HH:mm
+   * - 更早：M-d HH:mm
+   *
+   * 修改日期：2026-05-09
+   * 修改人：zls3434
+   * 修改目的：新增时间格式化方法，用于浏览历史卡片显示观看时间
+   *
+   * @param {number} viewAt - 浏览时间戳（秒级）
+   * @returns {string} 格式化后的时间文本
+   */
+  private _formatViewAtTime(viewAt: number): string {
+    if (!viewAt) { return ''; }
+    const now = Math.floor(Date.now() / 1000);
+    const diff = now - viewAt;
+    if (diff < 0) { return '刚刚'; }
+    if (diff < 3600) {
+      const minutes = Math.max(1, Math.floor(diff / 60));
+      return `${minutes}分钟前`;
+    }
+    if (diff < 86400) {
+      const hours = Math.floor(diff / 3600);
+      return `${hours}小时前`;
+    }
+    const date = new Date(viewAt * 1000);
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 86400000);
+    const isToday = date.getFullYear() === today.getFullYear() &&
+      date.getMonth() === today.getMonth() &&
+      date.getDate() === today.getDate();
+    const isYesterday = date.getFullYear() === yesterday.getFullYear() &&
+      date.getMonth() === yesterday.getMonth() &&
+      date.getDate() === yesterday.getDate();
+    const h = date.getHours().toString().padStart(2, '0');
+    const m = date.getMinutes().toString().padStart(2, '0');
+    if (isToday) { return `今天 ${h}:${m}`; }
+    if (isYesterday) { return `昨天 ${h}:${m}`; }
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const day = date.getDate().toString().padStart(2, '0');
+    return `${month}-${day} ${h}:${m}`;
   }
 }

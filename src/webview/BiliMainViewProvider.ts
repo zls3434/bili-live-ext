@@ -24,6 +24,10 @@
  *               新增 clickFavoriteTab 消息处理（切换收藏夹子标签/加载对应视频/持久化 ID）；
  *               刷新收藏界面时清除收藏夹相关状态缓存；
  *               ViewDataLoader 实例化新增 getCurrentFavoriteId/setCurrentFavoriteId 回调
+ * @modification 2026-05-09 zls3434 新增历史视图支持：
+ *           1. _pageState 和 _viewHasData 新增 historyVideos 和 historyLives 状态
+ *           2. openVideo 和 openLive 方法中增加浏览历史自动上报（异步不阻塞）
+ *           3. 消息处理中新增 clickHistorySubTab 消息处理（历史子标签切换）
  */
 
 import * as vscode from 'vscode';
@@ -101,6 +105,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     favorites: { page: 1, hasMore: true, loading: false },
     recommendedVideos: { page: 1, hasMore: true, loading: false },
     recommendedLives: { page: 1, hasMore: true, loading: false },
+    historyVideos: { page: 1, hasMore: true, loading: false },
+    historyLives: { page: 1, hasMore: true, loading: false },
   };
 
   /** 当前收藏夹 ID（用于收藏夹视频的分页加载） */
@@ -554,6 +560,16 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         cid,
       });
 
+      /** 异步上报视频浏览记录到B站，失败时不影响播放体验
+       *
+       * 修改日期：2026-05-09
+       * 修改人：zls3434
+       * 修改目的：新增视频观看浏览历史自动上报功能
+       */
+      this.apiService.reportVideoHistory(bvid, cid).catch((err) => {
+        logger.warn(`上报视频浏览历史失败（不影响播放）: ${err}`);
+      });
+
       // 激活弹幕面板为视频模式（清空旧弹幕并更新面板标题）
       this._danmakuPanel?.activateForVideo(bvid, cid);
 
@@ -607,6 +623,16 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
         title,
         author: owner,
         roomId,
+      });
+
+      /** 异步上报直播浏览记录到B站，失败时不影响观看体验
+       *
+       * 修改日期：2026-05-09
+       * 修改人：zls3434
+       * 修改目的：新增直播观看浏览历史自动上报功能
+       */
+      this.apiService.reportLiveHistory(roomId).catch((err) => {
+        logger.warn(`上报直播浏览历史失败（不影响观看）: ${err}`);
       });
 
       // 连接直播弹幕 WebSocket，实时输出弹幕
@@ -794,6 +820,29 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               await this._loadViewData(ContentView.favorites);
               break;
             }
+            /**
+             * 点击历史子标签，切换视频/直播浏览历史视图
+             *
+             * 修改日期：2026-05-09
+             * 修改人：zls3434
+             * 修改目的：新增历史子标签切换消息处理，支持在视频和直播浏览历史之间切换
+             *
+             * 处理流程：
+             * 1. 接收前端传来的 view（视图类型）
+             * 2. 重置目标视图的分页状态（page=1，hasMore=true，清空游标）
+             * 3. 清除目标视图的数据缓存标记
+             * 4. 加载目标视图的数据
+             */
+            case 'clickHistorySubTab': {
+              const historyView = message.view as ContentView;
+              /* 重置目标视图的分页状态：page 归 1，清空游标 */
+              this._resetPageState(historyView);
+              /* 清除目标视图的数据缓存标记，强制重新加载 */
+              this._viewHasData[historyView as string] = false;
+              /* 加载目标视图的数据 */
+              await this._loadViewData(historyView);
+              break;
+            }
             case 'goBack': {
               await this.goBack();
               break;
@@ -933,6 +982,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     favorites: false,
     recommendedVideos: false,
     recommendedLives: false,
+    historyVideos: false,
+    historyLives: false,
   };
 
   /**

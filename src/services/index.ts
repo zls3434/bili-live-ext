@@ -30,4 +30,5 @@ export { RecommendApiService } from './recommendApi';
 export { VideoApiService } from './videoApi';
 export { LiveApiService } from './liveApi';
 export { DanmakuApiService } from './danmakuApi';
+export { HistoryApiService } from './historyApi';
 export { ViewHistoryManager } from './viewHistoryManager';

@@ -128,6 +128,10 @@ export enum ContentView {
   recommendedVideos = 'recommendedVideos',
   /** 推荐直播视图 */
   recommendedLives = 'recommendedLives',
+  /** 历史视频视图（视频浏览历史） */
+  historyVideos = 'historyVideos',
+  /** 历史直播视图（直播浏览历史） */
+  historyLives = 'historyLives',
 }
 
 /**
@@ -145,6 +149,50 @@ export interface FollowUpVideoViewData {
   face: string;
   /** UP主发布的视频列表 */
   videos: VideoInfo[];
+}
+
+/**
+ * 浏览历史条目
+ *
+ * 描述B站浏览历史中的单条记录，涵盖视频和直播两种类型。
+ * 数据来源于B站官方浏览历史API（/x/web-interface/history/cursor），
+ * 按观看时间倒序排列。
+ *
+ * 修改日期：2026-05-09
+ * 修改人：zls3434
+ * 修改目的：新增浏览历史功能，定义历史记录条目的数据结构
+ */
+export interface HistoryItem {
+  /** 历史 ID，唯一标识一条浏览记录 */
+  kid: string;
+  /** 视频 BV 号（视频类型时有效） */
+  bvid: string;
+  /** 视频/直播标题 */
+  title: string;
+  /** 封面图 URL */
+  cover: string;
+  /** UP主/主播名称 */
+  author: string;
+  /** UP主/主播用户ID */
+  mid: number;
+  /** 视频/直播时长（秒），直播为0 */
+  duration: number;
+  /** 播放次数 */
+  playCount: number;
+  /** 观看时间戳（秒级），用于排序和游标分页 */
+  viewAt: number;
+  /** 观看进度（秒），-1表示已看完，0表示未开始 */
+  progress: number;
+  /** 历史类型：archive(视频)、live(直播)、article(专栏) */
+  type: 'archive' | 'live' | 'article';
+  /** 视频 cid（分P标识，视频类型时有效） */
+  cid: number;
+  /** 直播间房间号（直播类型时有效，从 history.oid 或 aid 中提取） */
+  roomId: number;
+  /** 弹幕数量 */
+  danmakuCount: number;
+  /** 观看时间文本（如"2小时前"），由前端格式化显示 */
+  viewAtText?: string;
 }
 
 /**
