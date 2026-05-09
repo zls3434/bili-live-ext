@@ -161,9 +161,15 @@ export class HistoryApiService extends BaseBiliApiService {
         return {
           // kid 格式为 "类型_oid epid"，如 "archive_123456_0"，作为删除历史的唯一标识
           kid: item.kid as string || '',
-          bvid: item.bvid as string || '',
+          /* bvid 优先从外层获取，若为空则从 history 对象中获取
+           * B站历史API中，部分视频（如番剧pgc类型）的bvid在外层为空，
+           * 需要从 history.bvid 字段中获取
+           * 修改日期：2026-05-09 qiweizhe 修复视频历史卡片bvid为空导致点击无法播放的问题 */
+          bvid: (item.bvid as string) || ((item.history as Record<string, unknown>)?.bvid as string) || '',
           title: item.title as string || '',
+          /* cover 优先使用 pic 字段（外层封面图），备选 cover 字段（番剧封面图） */
           cover: this._ensureHttps(item.pic as string || (item.cover as string) || ''),
+          /* author 优先使用 author_name（外层作者名），备选 owner.name（UP主信息对象中的名称） */
           author: (item.author_name as string) || ((item.owner as Record<string, unknown>)?.name as string) || '',
           mid: (item.owner as Record<string, unknown>)?.mid as number || 0,
           duration: item.duration as number || 0,

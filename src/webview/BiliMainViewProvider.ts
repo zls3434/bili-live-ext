@@ -105,8 +105,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     favorites: { page: 1, hasMore: true, loading: false },
     recommendedVideos: { page: 1, hasMore: true, loading: false },
     recommendedLives: { page: 1, hasMore: true, loading: false },
-    historyVideos: { page: 1, hasMore: true, loading: false },
-    historyLives: { page: 1, hasMore: true, loading: false },
+    historyVideos: { page: 1, hasMore: true, loading: false, feedOffset: '' },
+    historyLives: { page: 1, hasMore: true, loading: false, feedOffset: '' },
   };
 
   /** 当前收藏夹 ID（用于收藏夹视频的分页加载） */
@@ -752,11 +752,13 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
             }
             case 'clickVideo': {
               const bvid = message.bvid as string;
+              logger.info(`点击视频卡片: bvid=${bvid}`);
               await this.openVideo(bvid);
               break;
             }
             case 'clickLive': {
               const roomId = message.roomId as number;
+              logger.info(`点击直播卡片: roomId=${roomId}`);
               await this.openLive(roomId);
               break;
             }

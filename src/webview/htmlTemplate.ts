@@ -1441,6 +1441,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         function buildHistoryLiveCards(items) {
           let html = '';
           items.forEach(item => {
+            /* 跳过没有 roomId 的条目（不应该出现，但做保护性检查） */
+            if (!item.roomId) { return; }
             const onlineStr = '历史';
             const viewTimeStr = item.viewAtText || '';
             html += '<div class="card" data-room-id="' + item.roomId + '" onclick="clickLive(this)">';
@@ -1789,6 +1791,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           const bvid = el.dataset.bvid;
           if (bvid) {
             vscodeApi.postMessage({ type: 'clickVideo', bvid });
+          } else {
+            console.warn('[BiliLive] clickVideo: data-bvid 为空，无法播放，el=', el);
           }
         }
 
@@ -1796,6 +1800,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           const roomId = parseInt(el.dataset.roomId, 10);
           if (roomId) {
             vscodeApi.postMessage({ type: 'clickLive', roomId });
+          } else {
+            console.warn('[BiliLive] clickLive: data-room-id 为空或无效，el=', el);
           }
         }
 
