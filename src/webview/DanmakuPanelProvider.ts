@@ -262,6 +262,9 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
       title: `直播间 ${roomId}`,
     });
 
+    // 自动展开弹幕面板，确保用户进入直播时能看到弹幕
+    this._view?.show(true);
+
     logger.info(`弹幕面板已激活为直播模式，房间号: ${roomId}`);
   }
 
@@ -291,6 +294,9 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
       title: `视频 ${bvid}`,
     });
 
+    // 自动展开弹幕面板，确保用户进入视频播放时能看到弹幕
+    this._view?.show(true);
+
     logger.info(`弹幕面板已激活为视频模式，BV号: ${bvid}, cid: ${cid}`);
   }
 
@@ -318,6 +324,10 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
       mode: 'none',
       title: '',
     });
+
+    // 自动隐藏弹幕面板，恢复到之前的面板布局
+    // WebviewView 没有 hide() 方法，使用命令关闭面板
+    vscode.commands.executeCommand('workbench.action.closePanel');
 
     logger.info('弹幕面板已停用');
   }
