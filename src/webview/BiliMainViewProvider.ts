@@ -28,12 +28,19 @@
  *           1. _pageState 和 _viewHasData 新增 historyVideos 和 historyLives 状态
  *           2. openVideo 和 openLive 方法中增加浏览历史自动上报（异步不阻塞）
  *           3. 消息处理中新增 clickHistorySubTab 消息处理（历史子标签切换）
+ * @modification 2026-05-12 zls3434 关注列表后台定时刷新 + 全部已读功能：
+ *           1. 新增 _followsRefreshTimer 定时器属性，每5分钟自动刷新关注列表
+ *           2. 新增 _startFollowsAutoRefresh / _stopFollowsAutoRefresh 方法管理定时器生命周期
+ *           3. Webview 可见时启动定时器，不可见时停止；dispose 时清除定时器
+ *           4. 新增 markAllRead 消息处理，批量标记所有UP主为已读并重新排序发送
  */
 
 import * as vscode from 'vscode';
 import {
   ContentView,
   LoginStatus,
+  LiveArea,
+  LiveSortType,
 } from '../types';
 import { SessionManager } from '../services/sessionManager';
 import { BiliLoginService } from '../services/biliLogin';
@@ -97,7 +104,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    * 修改人：zls3434
    * 修改目的：新增 followsVideos 和 followsLive 的分页状态
    */
-  private _pageState: Record<string, { page: number; hasMore: boolean; loading: boolean; feedOffset?: string }> = {
+  private _pageState: Record<string, { page: number; hasMore: boolean; loading: boolean; feedOffset?: string; areaId?: LiveArea; sortType?: LiveSortType }> = {
     follows: { page: 1, hasMore: true, loading: false },
     followsVideos: { page: 1, hasMore: true, loading: false },
     followsLive: { page: 1, hasMore: true, loading: false },
@@ -181,6 +188,18 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
 
   /** 登录轮询超时定时器（180秒过期） */
   private _loginExpiryTimer?: NodeJS.Timeout;
+
+  /**
+   * 关注列表后台自动刷新定时器
+   *
+   * 每5分钟自动刷新关注列表缓存，确保红点状态保持最新
+   * Webview 可见时启动，不可见时停止；dispose 时清除
+   *
+   * 修改日期：2026-05-12
+   * 修改人：zls3434
+   * 修改目的：新增定时器属性，支持关注列表后台自动刷新
+   */
+  private _followsRefreshTimer: NodeJS.Timeout | null = null;
 
   /**
    * 构造函数
@@ -510,6 +529,59 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * 启动关注列表后台自动刷新定时器
+   *
+   * 每5分钟自动刷新关注列表缓存（清除缓存 + 重新加载数据），
+   * 确保红点状态保持最新。Webview 可见时启动此定时器。
+   *
+   * 刷新流程：
+   * 1. 清除关注列表排序缓存（_viewDataLoader.clearFollowsCache()）
+   * 2. 重置关注列表分页状态和缓存标记
+   * 3. 重新加载关注列表数据
+   *
+   * 修改日期：2026-05-12
+   * 修改人：zls3434
+   * 修改目的：新增方法，支持关注列表后台定时刷新
+   *
+   * @returns {void}
+   */
+  private _startFollowsAutoRefresh(): void {
+    /* 先停止之前的定时器，避免重复启动 */
+    this._stopFollowsAutoRefresh();
+
+    /* 每5分钟（300000毫秒）刷新一次 */
+    const REFRESH_INTERVAL = 300000;
+    this._followsRefreshTimer = setInterval(() => {
+      /* 清除关注列表排序缓存 */
+      this._viewDataLoader.clearFollowsCache();
+      /* 重置关注列表分页状态 */
+      this._resetPageState(ContentView.follows);
+      /* 清除关注列表的数据缓存标记，强制重新加载 */
+      this._viewHasData['follows'] = false;
+      /* 重新加载关注列表数据 */
+      this._loadViewData(ContentView.follows);
+    }, REFRESH_INTERVAL);
+  }
+
+  /**
+   * 停止关注列表后台自动刷新定时器
+   *
+   * Webview 不可见时或 dispose 时调用，清除定时器避免后台无效刷新。
+   *
+   * 修改日期：2026-05-12
+   * 修改人：zls3434
+   * 修改目的：新增方法，停止关注列表后台定时刷新
+   *
+   * @returns {void}
+   */
+  private _stopFollowsAutoRefresh(): void {
+    if (this._followsRefreshTimer) {
+      clearInterval(this._followsRefreshTimer);
+      this._followsRefreshTimer = null;
+    }
+  }
+
+  /**
    * 根据 BV 号打开并播放视频
    *
    * 流程：
@@ -769,6 +841,28 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
              * 修改人：zls3434
              * 修改目的：新增消息处理，支持从关注列表点击进入UP主视频列表
              */
+            /**
+             * 一键标记所有关注UP主的红点为已读
+             *
+             * 修改日期：2026-05-12
+             * 修改人：zls3434
+             * 修改目的：新增全部已读功能，批量记录所有关注UP主的查看时间戳为当前时间
+             */
+            case 'markAllRead': {
+              const cache = this._viewDataLoader.getFollowsCache();
+              if (cache && cache.length > 0) {
+                /* 批量记录所有关注UP主的当前时间作为查看时间，消除红点 */
+                for (const item of cache) {
+                  await this.viewHistoryManager.setViewTime(item.mid);
+                }
+                /* 重新排序缓存并刷新前端 */
+                await this._viewDataLoader.reorderFollowsCache();
+                this._resetPageState(ContentView.follows);
+                this._viewHasData['follows'] = false;
+                await this._loadViewData(ContentView.follows);
+              }
+              break;
+            }
             case 'clickFollowUp': {
               const upMid = message.mid as number;
               const upUname = message.uname as string;
@@ -874,6 +968,42 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               await this._loadMoreData(loadView);
               break;
             }
+            /**
+             * 切换直播分区
+             *
+             * 修改日期：2026-05-04
+             * 修改人：zls3434
+             * 修改目的：支持按分区筛选推荐直播间
+             *
+             * @param {number} message.areaId - 分区ID，0表示全部分区
+             */
+            case 'changeLiveArea': {
+              const areaId = message.areaId as LiveArea;
+              const liveState = this._pageState['recommendedLives'];
+              liveState.areaId = areaId;
+              liveState.page = 1;
+              liveState.hasMore = true;
+              await this._loadViewData(ContentView.recommendedLives);
+              break;
+            }
+            /**
+             * 切换直播排序方式
+             *
+             * 修改日期：2026-05-04
+             * 修改人：zls3434
+             * 修改目的：支持推荐/人气两种排序方式切换
+             *
+             * @param {string} message.sortType - 排序方式，'recommend'或'online'
+             */
+            case 'changeLiveSort': {
+              const sortType = message.sortType as LiveSortType;
+              const liveSortState = this._pageState['recommendedLives'];
+              liveSortState.sortType = sortType;
+              liveSortState.page = 1;
+              liveSortState.hasMore = true;
+              await this._loadViewData(ContentView.recommendedLives);
+              break;
+            }
             case 'refresh': {
               const refreshView = message.view as ContentView;
               /* 刷新关注列表时清除排序缓存，强制完整重新获取 */
@@ -920,6 +1050,11 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           this._postMessage({ type: 'updateLoginStatus', loggedIn: this._loginStatus.loggedIn });
           // 同步登录状态到弹幕面板
           this._danmakuPanel?.updateLoginStatus(this._loginStatus.loggedIn);
+          /* Webview 可见时启动关注列表自动刷新定时器 */
+          this._startFollowsAutoRefresh();
+        } else {
+          /* Webview 不可见时停止关注列表自动刷新定时器 */
+          this._stopFollowsAutoRefresh();
         }
       });
     }
@@ -927,6 +1062,8 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
     // 只在首次激活时加载数据，后续依赖前端状态恢复
     if (this._firstActivation) {
       this._loadViewData(this._currentView);
+      /* 首次激活时启动关注列表自动刷新定时器 */
+      this._startFollowsAutoRefresh();
     }
     this._firstActivation = false;
   }
@@ -1017,16 +1154,46 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
    * @param {ContentView} view - 要重置的视图类型
    * @returns {void}
    */
+  /**
+   * 重置指定视图的分页状态
+   *
+   * 切换 Tab 时调用，将页码重置为 1。
+   * 保留直播视图的分区和排序状态，避免刷新/切换时丢失用户选择。
+   *
+   * 修改日期：2026-05-04
+   * 修改人：zls3434
+   * 修改目的：重置分页时保留 areaId 和 sortType，避免刷新/切换视图时回到默认值
+   *
+   * @param {ContentView} view - 要重置的视图类型
+   * @returns {void}
+   */
   private _resetPageState(view: ContentView): void {
     const key = Object.keys(ContentView).find(k => ContentView[k as keyof typeof ContentView] === view);
     if (key && this._pageState[key]) {
-      this._pageState[key] = { page: 1, hasMore: true, loading: false, feedOffset: '' };
+      const prev = this._pageState[key];
+      this._pageState[key] = {
+        page: 1,
+        hasMore: true,
+        loading: false,
+        feedOffset: '',
+        // 保留直播视图的分区和排序状态
+        areaId: prev.areaId,
+        sortType: prev.sortType,
+      };
     }
   }
 
   private _resetAllPageState(): void {
     for (const key of Object.keys(this._pageState)) {
-      this._pageState[key] = { page: 1, hasMore: true, loading: false, feedOffset: '' };
+      const prev = this._pageState[key];
+      this._pageState[key] = {
+        page: 1,
+        hasMore: true,
+        loading: false,
+        feedOffset: '',
+        areaId: prev.areaId,
+        sortType: prev.sortType,
+      };
     }
   }
 

@@ -263,7 +263,8 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
     });
 
     // 自动展开弹幕面板，确保用户进入直播时能看到弹幕
-    this._view?.show(true);
+    // 使用命令聚焦面板视图，比 show() 更可靠（面板未 resolve 时也能工作）
+    vscode.commands.executeCommand('bilibili-danmaku-panel.focus');
 
     logger.info(`弹幕面板已激活为直播模式，房间号: ${roomId}`);
   }
@@ -295,7 +296,7 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
     });
 
     // 自动展开弹幕面板，确保用户进入视频播放时能看到弹幕
-    this._view?.show(true);
+    vscode.commands.executeCommand('bilibili-danmaku-panel.focus');
 
     logger.info(`弹幕面板已激活为视频模式，BV号: ${bvid}, cid: ${cid}`);
   }
@@ -324,10 +325,6 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
       mode: 'none',
       title: '',
     });
-
-    // 自动隐藏弹幕面板，恢复到之前的面板布局
-    // WebviewView 没有 hide() 方法，使用命令关闭面板
-    vscode.commands.executeCommand('workbench.action.closePanel');
 
     logger.info('弹幕面板已停用');
   }

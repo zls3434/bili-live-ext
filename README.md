@@ -128,12 +128,12 @@ bili-live-ext/
 
 ## 命令
 
-| 命令 | 说明 |
-|------|------|
-| `bilibili.login` | B站扫码登录 |
+| 命令                   | 说明            |
+| -------------------- | ------------- |
+| `bilibili.login`     | B站扫码登录        |
 | `bilibili.openVideo` | 打开视频（输入 BV 号） |
-| `bilibili.openLive` | 打开直播（输入房间号） |
-| `bilibili.goBack` | 返回上一页 |
+| `bilibili.openLive`  | 打开直播（输入房间号）   |
+| `bilibili.goBack`    | 返回上一页         |
 
 ## 技术架构
 
@@ -145,6 +145,14 @@ bili-live-ext/
 - **API 架构**：`BiliApiService` 委托模式，按业务领域拆分为 `UserApiService`、`FollowApiService`、`VideoApiService` 等子服务
 - **数据缓存**：视图级数据缓存 + 分页状态管理，避免切换 Tab 时重复加载
 - **持久化**：登录态 Cookie 通过 `globalState` 持久化，收藏夹选中状态自动记忆
+
+## AI 开发声明
+
+本项目在开发过程中完全使用 AI 辅助编程工具（Claude Code / Trae AI）进行代码生成和优化。声明如下：
+
+- **免责声明**：本软件按「原样」提供，不提供任何明示或暗示的保证，包括但不限于适销性、特定用途的适用性和非侵权性。使用本软件所产生的任何风险由用户自行承担
+- **问题与缺陷**：本项目不保证软件完全没有 bug 或问题，亦不对因使用本软件造成的任何直接、间接、附带、特殊或后果性损害承担责任
+- **版权声明**：本项目尊重他人知识产权。如认为本项目内容涉及版权侵权，请通过 [GitHub Issues](https://github.com/zls3434/bili-live-ext/issues) 联系维护者，核实后将及时删除相关内容
 
 ## License
 

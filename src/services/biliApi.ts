@@ -1,5 +1,5 @@
 import { SessionManager } from './sessionManager';
-import { VideoInfo, LiveRoomInfo, MediaInfo, HistoryItem } from '../types';
+import { VideoInfo, LiveRoomInfo, MediaInfo, HistoryItem, LiveArea, LiveSortType } from '../types';
 import { UserApiService } from './userApi';
 import { FollowApiService, RawFollowInfo } from './followApi';
 import { FavoriteApiService } from './favoriteApi';
@@ -83,8 +83,8 @@ export class BiliApiService {
     return this.recommendApi.getRecommendedVideos(freshIdx);
   }
 
-  async getRecommendedLives(page: number = 1, pageSize: number = 30): Promise<{ list: LiveRoomInfo[]; hasMore: boolean }> {
-    return this.recommendApi.getRecommendedLives(page, pageSize);
+  async getRecommendedLives(page: number = 1, pageSize: number = 30, areaId: LiveArea = LiveArea.all, sortType: LiveSortType = LiveSortType.recommend): Promise<{ list: LiveRoomInfo[]; hasMore: boolean }> {
+    return this.recommendApi.getRecommendedLives(page, pageSize, areaId, sortType);
   }
 
   async getLiveRoomList(areaId?: number, page: number = 1, pageSize: number = 30): Promise<LiveRoomInfo[]> {

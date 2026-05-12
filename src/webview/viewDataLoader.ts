@@ -32,16 +32,21 @@
  *           1. 新增 _loadHistoryVideosData 私有方法，调用 getHistoryCursor API 获取视频浏览历史，使用游标分页实现懒加载
  *           2. 新增 _loadHistoryLivesData 私有方法，调用 getHistoryCursor API 获取直播浏览历史，使用游标分页实现懒加载
  *           3. 在 loadViewData 中新增 ContentView.historyVideos 和 ContentView.historyLives 分支
+ * @modification 2026-05-12 zls3434 关注列表异步加载优化——先显示列表，红点异步更新：
+ *           1. 修改 _loadFollowsData：首次加载时先获取关注者列表并以 hasNewVideo:false 状态立即返回，
+ *              然后异步启动并发池查询每个关注者的最新视频，查询完成后更新红点状态并重新排序发送给前端
+ *           2. 前端会收到两次 updateListData（第一次无红点，第二次有红点），实现快速响应
+ *           3. 新增 _asyncUpdateFollowsRedDots 私有方法，封装异步红点更新逻辑
  */
 
-import { ContentView, LiveRoomInfo, VideoInfo, HistoryItem } from '../types';
+import { ContentView, LiveRoomInfo, VideoInfo, HistoryItem, LiveArea, LiveSortType } from '../types';
 import { BiliApiService } from '../services/biliApi';
 import { DanmakuService } from '../services/danmakuService';
 import { ViewHistoryManager } from '../services/viewHistoryManager';
 import { OutputChannelManager } from '../utils/outputChannelManager';
 import { logger } from '../utils/logger';
 
-type PageState = { page: number; hasMore: boolean; loading: boolean; feedOffset?: string };
+type PageState = { page: number; hasMore: boolean; loading: boolean; feedOffset?: string; areaId?: LiveArea; sortType?: LiveSortType };
 
 export type PostMessageFn = (message: Record<string, unknown>) => void;
 
@@ -163,6 +168,19 @@ export class ViewDataLoader {
    */
   clearFollowsCache(): void {
     this._followsSortedCache = null;
+  }
+
+  /**
+   * 获取关注列表全局排序缓存
+   *
+   * 用于全部已读功能，获取缓存中的所有关注UP主 mid 列表，
+   * 以便批量设置查看时间戳。
+   *
+   * 修改日期：2026-05-12
+   * 修改人：zls3434
+   */
+  getFollowsCache(): Array<{ mid: number; uname: string; face: string; hasNewVideo: boolean; latestPubDate: number }> | null {
+    return this._followsSortedCache;
   }
 
   /**
@@ -310,11 +328,18 @@ export class ViewDataLoader {
    * 加载关注列表视图数据
    *
    * 加载策略（三种模式）：
-   * 1. 无缓存（首次加载）：获取全部关注者 → 并发查询最新视频 → 全局排序 → 缓存
+   * 1. 无缓存（首次加载）：先获取关注者列表并以 hasNewVideo:false 立即返回前端显示，
+   *    然后异步启动并发池查询最新视频，查询完成后更新红点状态并重新发送给前端
    * 2. 有缓存（Tab切换、翻页）：直接从缓存分页返回，不发起网络请求
    * 3. 强制刷新（用户点击刷新按钮）：先清除缓存，再走模式1
    *
    * 从UP主视频列表返回时，调用 reorderFollowsCache() 仅重算红点排序，不走此方法。
+   *
+   * 异步红点更新关键点：
+   * - 首次加载时先发送一次无红点数据（用户能看到关注列表）
+   * - 异步视频查询完成后更新缓存并发送第二次带红点的数据
+   * - 前端收到两次 updateListData，第二次覆盖第一次
+   * - loading 状态只在真正加载时设置，异步更新不设置 loading
    *
    * 并发控制：
    * 使用并发池模式，最大30个并发请求，所有请求尽快发出，
@@ -324,6 +349,7 @@ export class ViewDataLoader {
    * @modification 2026-05-07 zls3434 改为全局排序+内存分页，确保有新视频的主播排在整个列表最前面
    * @modification 2026-05-07 zls3434 优化并发策略，从批次并发改为并发池模式，大幅提升加载速度
    * @modification 2026-05-07 zls3434 优化加载策略：有缓存时直接分页返回，不重新获取数据
+   * @modification 2026-05-12 zls3434 异步加载优化：首次加载先返回无红点列表，异步查询最新视频后更新红点
    */
   private async _loadFollowsData(): Promise<void> {
     const mid = await this.apiService.getMyMid();
@@ -341,72 +367,171 @@ export class ViewDataLoader {
     try {
       /* 有缓存时直接从缓存分页返回，不重新获取数据（Tab切换、翻页等场景） */
       if (!this._followsSortedCache) {
-        /* 无缓存（首次加载）：获取全部关注者并全局排序 */
+        /* 无缓存（首次加载）：先获取关注者列表，以无红点状态立即返回前端 */
         const allFollows = await this.apiService.getAllFollowings(mid);
 
-        /* 并发池请求每个关注UP主的最新一条视频
-         * 并发池模式：最多同时进行 MAX_CONCURRENT 个请求，完成一个立即发起下一个 */
-        const MAX_CONCURRENT = 30;
-        const latestVideoMap = new Map<number, VideoInfo | null>();
-        const followQueue = [...allFollows];
-        let queueIndex = 0;
-
-        const processNext = async (): Promise<void> => {
-          while (queueIndex < followQueue.length) {
-            const follow = followQueue[queueIndex++];
-            try {
-              const videos = await this.apiService.getUserVideos(follow.mid, 1, 1);
-              latestVideoMap.set(follow.mid, videos.length > 0 ? videos[0] : null);
-            } catch {
-              latestVideoMap.set(follow.mid, null);
-            }
-          }
-        };
-
-        const poolTasks: Promise<void>[] = [];
-        for (let i = 0; i < Math.min(MAX_CONCURRENT, followQueue.length); i++) {
-          poolTasks.push(processNext());
-        }
-        await Promise.all(poolTasks);
-
-        /* 批量获取每个关注UP主的上次查看时间戳（本地读取，几乎瞬时完成） */
-        const mids = allFollows.map(f => f.mid);
-        const viewTimesMap = await this.viewHistoryManager.getViewTimesBatch(mids);
-
-        /* 构建关注列表数据，判断是否有新视频 */
+        /* 构建初始数据：hasNewVideo=false, latestPubDate=0, latestVideo=null
+         * 先让用户看到关注列表，红点状态异步更新 */
         const allFollowItems = allFollows.map((follow) => {
-          const latestVideo = latestVideoMap.get(follow.mid) ?? null;
-          const latestPubDate = latestVideo?.pubdate ?? 0;
-          const latestPubDateMs = latestPubDate * 1000;
-          const viewTimeMs = viewTimesMap[follow.mid] ?? 0;
-          const hasNewVideo = latestVideo !== null && latestPubDateMs > viewTimeMs;
-
           return {
             mid: follow.mid,
             uname: follow.uname,
             face: follow.face ? follow.face.replace(/^\/\//, 'https://').replace(/^http:\/\//, 'https://') : '',
             liveRoom: null as LiveRoomInfo | null,
             videos: [] as VideoInfo[],
-            latestVideo,
-            hasNewVideo,
-            latestPubDate,
+            latestVideo: null as VideoInfo | null,
+            hasNewVideo: false,
+            latestPubDate: 0,
           };
         });
 
-        /* 全局排序——有新视频的主播排在整个列表最上面 */
-        allFollowItems.sort((a, b) => {
-          if (a.hasNewVideo !== b.hasNewVideo) {
-            return a.hasNewVideo ? -1 : 1;
-          }
-          return (b.latestPubDate ?? 0) - (a.latestPubDate ?? 0);
+        /* 缓存初始数据（暂无红点信息） */
+        this._followsSortedCache = allFollowItems;
+
+        /* 先发送第一页数据给前端（无红点），让用户尽快看到关注列表 */
+        const totalCount = allFollowItems.length;
+        const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+        const currentPage = state.page;
+        const startIndex = (currentPage - 1) * PAGE_SIZE;
+        const pageData = allFollowItems.slice(startIndex, startIndex + PAGE_SIZE);
+        const hasMore = currentPage < totalPages;
+
+        state.hasMore = hasMore;
+        this._markViewHasData('follows');
+        this.postMessage({
+          type: state.page === 1 ? 'updateListData' : 'appendListData',
+          view: ContentView.follows,
+          data: pageData,
+          hasMore,
         });
 
-        /* 缓存全局排序后的数据 */
-        this._followsSortedCache = allFollowItems;
+        /* 异步启动红点更新：并发查询最新视频并更新红点状态，完成后重新发送给前端 */
+        this._asyncUpdateFollowsRedDots(allFollows);
+      } else {
+        /* 有缓存：直接分页返回 */
+        const cache = this._followsSortedCache!;
+        const totalCount = cache.length;
+        const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+        const currentPage = state.page;
+        const startIndex = (currentPage - 1) * PAGE_SIZE;
+        const pageData = cache.slice(startIndex, startIndex + PAGE_SIZE);
+        const hasMore = currentPage < totalPages;
+
+        state.hasMore = hasMore;
+        this._markViewHasData('follows');
+        this.postMessage({
+          type: state.page === 1 ? 'updateListData' : 'appendListData',
+          view: ContentView.follows,
+          data: pageData,
+          hasMore,
+        });
+      }
+    } catch (error) {
+      this.postMessage({ type: 'updateListData', view: ContentView.follows, data: [], error: `获取关注列表失败: ${error}`, hasMore: false });
+    } finally {
+      state.loading = false;
+    }
+  }
+
+  /**
+   * 异步更新关注列表红点状态
+   *
+   * 首次加载后异步调用，并发查询每个关注UP主的最新视频，
+   * 查询完成后更新缓存中的 hasNewVideo/latestPubDate/latestVideo 字段，
+   * 重新排序后重新发送给前端覆盖第一次的无红点数据。
+   *
+   * 关键点：
+   * - 不设置 loading 状态（主请求已完成）
+   * - 使用并发池模式（最大30并发）查询最新视频
+   * - 查询完成后更新缓存、重新排序、重新发送第一页数据
+   * - 前端收到两次 updateListData，第二次覆盖第一次
+   *
+   * 修改日期：2026-05-12
+   * 修改人：zls3434
+   * 修改目的：关注列表异步加载优化，先显示列表再异步更新红点
+   *
+   * @param {Array<{mid: number; uname: string; face: string}>} allFollows - 关注者列表
+   */
+  /**
+   * 异步更新关注列表红点状态
+   *
+   * 使用关注动态 Feed API 批量获取所有关注UP主的最新视频动态，
+   * 从中提取每个UP主最新一条视频的发布时间，判断红点状态。
+   * 相比逐个调用 getUserVideos，仅需少量 API 请求即可覆盖所有关注者。
+   *
+   * 修改日期：2026-05-12
+   * 修改人：zls3434
+   * 修改目的：用关注动态Feed API替代逐个getUserVideos，大幅减少API请求数量
+   */
+  private _asyncUpdateFollowsRedDots(allFollows: Array<{mid: number; uname: string; face: string}>): void {
+    const MAX_FEED_PAGES = 5;
+    const latestVideoMap = new Map<number, VideoInfo | null>();
+
+    /* 通过关注动态Feed API批量获取最新视频，只需要几页即可覆盖所有关注者的最新视频 */
+    const fetchFeedPages = async (): Promise<void> => {
+      let offset = '';
+      let pageCount = 0;
+
+      while (pageCount < MAX_FEED_PAGES) {
+        try {
+          const result = await this.apiService.getFollowFeedVideos(offset);
+          for (const video of result.videos) {
+            /* 只保留每个UP主最新的一条视频（按pubdate倒序，第一条即为最新的） */
+            const authorMid = this._findMidByAuthor(allFollows, video.author);
+            if (authorMid !== null && !latestVideoMap.has(authorMid)) {
+              latestVideoMap.set(authorMid, video);
+            }
+          }
+          offset = result.offset;
+          pageCount++;
+
+          /* 没有更多数据则停止翻页 */
+          if (!result.hasMore) { break; }
+
+          /* 如果所有关注者都已有最新视频数据，无需继续翻页 */
+          if (latestVideoMap.size >= allFollows.length) { break; }
+        } catch (error) {
+          logger.error(`异步获取关注动态Feed失败: ${error}`);
+          break;
+        }
+      }
+    };
+
+    fetchFeedPages().then(async () => {
+      /* 批量获取每个关注UP主的上次查看时间戳 */
+      const mids = allFollows.map(f => f.mid);
+      const viewTimesMap = await this.viewHistoryManager.getViewTimesBatch(mids);
+
+      /* 确保缓存仍然存在（用户可能在此期间刷新了列表导致缓存被清除） */
+      if (!this._followsSortedCache) {
+        return;
       }
 
-      /* 基于缓存做内存分页 */
-      const cache = this._followsSortedCache!;
+      /* 更新缓存中每个关注者的红点状态 */
+      for (const item of this._followsSortedCache) {
+        const latestVideo = latestVideoMap.get(item.mid) ?? null;
+        const latestPubDate = latestVideo?.pubdate ?? 0;
+        const latestPubDateMs = latestPubDate * 1000;
+        const viewTimeMs = viewTimesMap[item.mid] ?? 0;
+        const hasNewVideo = latestVideo !== null && latestPubDateMs > viewTimeMs;
+
+        item.latestVideo = latestVideo;
+        item.latestPubDate = latestPubDate;
+        item.hasNewVideo = hasNewVideo;
+      }
+
+      /* 重新全局排序——有新视频的主播排在整个列表最上面 */
+      this._followsSortedCache.sort((a, b) => {
+        if (a.hasNewVideo !== b.hasNewVideo) {
+          return a.hasNewVideo ? -1 : 1;
+        }
+        return (b.latestPubDate ?? 0) - (a.latestPubDate ?? 0);
+      });
+
+      /* 重新发送排序后的第一页数据给前端，覆盖之前无红点的数据 */
+      const PAGE_SIZE = 20;
+      const state = this.pageState['follows'];
+      const cache = this._followsSortedCache;
       const totalCount = cache.length;
       const totalPages = Math.ceil(totalCount / PAGE_SIZE);
       const currentPage = state.page;
@@ -415,18 +540,31 @@ export class ViewDataLoader {
       const hasMore = currentPage < totalPages;
 
       state.hasMore = hasMore;
-      this._markViewHasData('follows');
       this.postMessage({
-        type: state.page === 1 ? 'updateListData' : 'appendListData',
+        type: 'updateListData',
         view: ContentView.follows,
         data: pageData,
         hasMore,
       });
-    } catch (error) {
-      this.postMessage({ type: 'updateListData', view: ContentView.follows, data: [], error: `获取关注列表失败: ${error}`, hasMore: false });
-    } finally {
-      state.loading = false;
-    }
+    }).catch((error) => {
+      /* 异步红点更新失败不影响主流程，仅记录错误日志 */
+      logger.error(`异步更新关注列表红点状态失败: ${error}`);
+    });
+  }
+
+  /**
+   * 通过作者名称在关注列表中查找对应的 mid
+   *
+   * 由于关注动态Feed返回的视频数据中只有作者名（author），没有 mid，
+   * 需要在关注列表中按名称匹配来关联 mid。
+   * 如果有多个同名UP主，返回第一个匹配的 mid。
+   *
+   * 修改日期：2026-05-12
+   * 修改人：zls3434
+   */
+  private _findMidByAuthor(allFollows: Array<{mid: number; uname: string}>, author: string): number | null {
+    const found = allFollows.find(f => f.uname === author);
+    return found ? found.mid : null;
   }
 
   private async _loadFollowsVideosData(): Promise<void> {
@@ -739,7 +877,12 @@ export class ViewDataLoader {
     state.loading = true;
 
     try {
-      const result = await this.apiService.getRecommendedLives(state.page);
+      const result = await this.apiService.getRecommendedLives(
+        state.page,
+        30,
+        state.areaId ?? LiveArea.all,
+        state.sortType ?? LiveSortType.recommend
+      );
       state.hasMore = result.hasMore;
       this._markViewHasData('recommendedLives');
       this.postMessage({

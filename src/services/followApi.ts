@@ -203,16 +203,30 @@ export class FollowApiService extends BaseBiliApiService {
     }
   }
 
-  async batchGetUsersLiveStatus(mids: number[]): Promise<LiveRoomInfo[]> {
+  /**
+   * 批量查询 UP主是否正在直播
+   *
+   * 修改日期：2026-05-12
+   * 修改人：zls3434
+   * 修改目的：添加重试机制，处理并发请求时B站服务器主动断开TLS连接导致的瞬态网络错误
+   *          （Error: Client network socket disconnected before secure TLS connection was established）
+   *          采用指数退避重试（最多3次，间隔 500ms/1000ms/2000ms），
+   *          仅对网络连接类错误重试，API业务错误（如 code!=0）不重试
+   *
+   * @param {number[]} mids - UP主用户 ID 数组（建议单次不超过 50 个）
+   * @returns {Promise<LiveRoomInfo[]>} 正在直播的直播间信息数组（未开播的会被过滤掉）
+   */
+  async batchGetUsersLiveStatus(mids: number[], retryCount: number = 0): Promise<LiveRoomInfo[]> {
     if (mids.length === 0) {
       return [];
     }
 
+    /* 此 API 要求不携带 Cookie，不能使用 this.axiosInstance（会被拦截器自动注入 Cookie）。
+     * POST 请求体使用 PHP 数组参数格式（uids[]=1&uids[]=2），而非 JSON 数组格式。
+     * 使用 axios 直接调用，仅设置必要的请求头，不携带任何 Cookie。 */
+    const body = mids.map(mid => `uids[]=${encodeURIComponent(mid)}`).join('&');
+
     try {
-      // 重要：此 API 要求不携带 Cookie，不能使用 this.axiosInstance（会被拦截器自动注入 Cookie）。
-      // 使用 axios 直接调用，仅设置必要的请求头，不携带任何 Cookie。
-      // POST 请求体使用 PHP 数组参数格式（uids[]=1&uids[]=2），而非 JSON 数组格式。
-      const body = mids.map(mid => `uids[]=${encodeURIComponent(mid)}`).join('&');
       const response = await axios.post(
         'https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids',
         body,
@@ -252,7 +266,23 @@ export class FollowApiService extends BaseBiliApiService {
 
       return liveRooms;
     } catch (error) {
-      logger.error(`batchGetUsersLiveStatus 请求失败: ${error}`);
+      const MAX_RETRIES = 3;
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      /*
+       * 判断是否为可重试的网络瞬态错误（如 TLS 连接断开、ECONNRESET、ETIMEDOUT 等），
+       * API 业务错误（code != 0）已在上方返回，不会走到这里
+       */
+      const isRetryable = /socket disconnected|ECONNRESET|ETIMEDOUT|ECONNREFUSED|network/i.test(errorMsg);
+
+      if (isRetryable && retryCount < MAX_RETRIES) {
+        /* 指数退避：500ms, 1000ms, 2000ms */
+        const delay = 500 * Math.pow(2, retryCount);
+        logger.warn(`batchGetUsersLiveStatus 网络错误（第${retryCount + 1}次），${delay}ms 后重试: ${errorMsg}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.batchGetUsersLiveStatus(mids, retryCount + 1);
+      }
+
+      logger.error(`batchGetUsersLiveStatus 请求失败（已重试${retryCount}次）: ${error}`);
       return [];
     }
   }

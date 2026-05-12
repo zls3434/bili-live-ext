@@ -25,6 +25,12 @@
  *              新增视频观看进度条和观看时间的 CSS 样式，
  *              修改 highlightTab 支持 historyVideos/historyLives 高亮"历史"主标签，
  *              修改 renderListByView 和 appendListData 支持历史视图渲染和数据追加
+ * @modification 2026-05-11 zls3434 优化播放器窗口铺满插件界面并居中显示：
+ *              修改 .player-container 为 flex 列布局铺满全高，
+ *              修改 .player-video-area 为 flex 居中布局（align-items/justify-content: center），
+ *              修改 video 元素使用 max-width/max-height 替代 width/height:100%，
+ *              播放器模式移除内容区域内边距、退出时恢复，
+ *              控制栏 hover 逻辑改为 .player-container:hover 触发显示
  */
 
 import * as vscode from 'vscode';
@@ -147,6 +153,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           z-index: 10;
         }
         .player-overlay:hover { opacity: 1; }
+        /* 修改日期：2026-05-11 zls3434 控制栏在 hover 整个播放器容器时显示，而非仅 hover 视频区域 */
+        .player-container:hover .player-controls { opacity: 1; }
         .player-back-btn {
           background: none;
           border: none;
@@ -299,11 +307,35 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         }
 
         /* ========== 播放器视图 ========== */
-        .player-video-area { flex: 1; position: relative; background: #000; }
-        .player-video-area video {
-          width: 100%;
+        /* 修改日期：2026-05-11 zls3434 优化播放器窗口铺满整个插件界面并居中显示 */
+        /* 播放器容器：铺满整个侧边栏区域，使用 flex 列布局确保视频区域和控制栏纵向排列 */
+        .player-container {
+          position: relative;
+          display: flex;
+          flex-direction: column;
           height: 100%;
+          overflow: hidden;
+          background: #000;
+        }
+        /* 视频区域：flex 子项占据剩余空间，使用 flex 居中确保视频内容水平和垂直居中 */
+        .player-video-area {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: relative;
+          overflow: hidden;
+          background: #000;
+        }
+        /* video 元素：使用 max-width/max-height 确保视频在容器内完整显示不溢出，
+           配合父元素 flex 居中实现任意长宽比内容的水平/垂直居中 */
+        .player-video-area video {
+          max-width: 100%;
+          max-height: 100%;
+          width: auto;
+          height: auto;
           object-fit: contain;
+          display: block;
         }
 
         /* ========== 直播媒体控制栏（底部浮动，悬停显示） ========== */
@@ -322,7 +354,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           z-index: 10;
           gap: 8px;
         }
-        .player-video-area:hover .player-controls { opacity: 1; }
+        /* 修改日期：2026-05-11 zls3434 控制栏显示逻辑已移至 .player-container:hover .player-controls */
         .player-ctrl-btn {
           background: none;
           border: none;
@@ -413,6 +445,94 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
+        /* ========== 直播分区子标签样式 ========== */
+        /* 修改日期：2026-05-04 zls3434 新增直播分区子标签和排序下拉样式 */
+        /* 分区标签样式与主标签(.tab-btn)风格统一 */
+        .live-sub-bar {
+          display: flex;
+          align-items: center;
+          padding: 0;
+          border-bottom: 1px solid var(--vscode-sideBar-border);
+          position: relative;
+        }
+        .live-sub-tabs {
+          display: flex;
+          flex: 1;
+          padding: 0;
+          gap: 0;
+        }
+        .live-area-tab {
+          flex: 1;
+          padding: 4px 0;
+          border: none;
+          border-radius: 4px;
+          background: none;
+          color: var(--vscode-foreground);
+          cursor: pointer;
+          font-size: 11px;
+          text-align: center;
+          opacity: 0.7;
+          transition: opacity 0.15s, background-color 0.15s, color 0.15s;
+          white-space: nowrap;
+        }
+        .live-area-tab:hover { opacity: 0.9; background-color: var(--vscode-toolbar-hoverBackground); }
+        .live-area-tab.active {
+          opacity: 1;
+          color: #FB7299;
+          font-weight: 600;
+          background-color: rgba(251, 114, 153, 0.1);
+        }
+        .live-sort-select {
+          position: relative;
+          margin-right: 6px;
+        }
+        .live-sort-toggle {
+          padding: 2px 6px;
+          border: none;
+          border-radius: 3px;
+          background: none;
+          color: var(--vscode-foreground);
+          cursor: pointer;
+          font-size: 11px;
+          opacity: 0.7;
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          white-space: nowrap;
+        }
+        .live-sort-toggle:hover { opacity: 0.9; background-color: var(--vscode-toolbar-hoverBackground); }
+        .live-sort-toggle.active { opacity: 1; color: #FB7299; }
+        .live-sort-toggle svg { width: 10px; height: 10px; opacity: 0.7; }
+        .live-sort-dropdown {
+          display: none;
+          position: absolute;
+          right: 0;
+          top: 100%;
+          z-index: 100;
+          background: var(--vscode-editor-background);
+          border: 1px solid var(--vscode-panel-border, #555);
+          border-radius: 4px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          min-width: 80px;
+          padding: 4px 0;
+        }
+        .live-sort-dropdown.show { display: block; }
+        .live-sort-option {
+          display: block;
+          width: 100%;
+          padding: 4px 12px;
+          border: none;
+          border-radius: 0;
+          background: none;
+          color: var(--vscode-foreground);
+          cursor: pointer;
+          font-size: 11px;
+          text-align: left;
+          opacity: 0.8;
+        }
+        .live-sort-option:hover { opacity: 1; background-color: var(--vscode-toolbar-hoverBackground); }
+        .live-sort-option.active { color: #FB7299; opacity: 1; font-weight: 600; }
+
         /* ========== 收藏夹子标签样式 ========== */
         /* 修改日期：2026-05-08 zls3434 新增收藏夹子标签样式，替换原有 .fav-card 收藏夹卡片样式 */
         /* 样式规则与 .follow-sub-tab 完全一致，使用独立 class 名避免样式耦合 */
@@ -442,6 +562,25 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           padding: 4px 8px;
           gap: 2px;
           border-bottom: 1px solid var(--vscode-sideBar-border);
+        }
+        /* 全部已读按钮样式
+         * 修改日期：2026-05-12
+         * 修改人：zls3434
+         */
+        .mark-all-read-btn {
+          margin-left: auto;
+          font-size: 11px;
+          color: var(--vscode-textLink-foreground);
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 2px 6px;
+          border-radius: 3px;
+          white-space: nowrap;
+        }
+        .mark-all-read-btn:hover {
+          opacity: 0.8;
+          background-color: var(--vscode-toolbar-hoverBackground);
         }
         .follow-sub-tab {
           padding: 3px 10px;
@@ -576,6 +715,22 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         const viewCache = savedState.viewCache || {};
         let savedListHtml = savedState.savedListHtml || '';
         let hasMoreData = true;
+        /**
+         * 直播分区当前选中状态（默认全部分区/推荐模式）
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：支持直播列表按分区筛选
+         */
+        let currentLiveArea = savedState.currentLiveArea || 0;
+        /**
+         * 直播排序当前选中状态（默认推荐排序）
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：支持直播列表排序方式切换（推荐/人气）
+         */
+        let currentLiveSort = savedState.currentLiveSort || 'recommend';
 
         /**
          * 登录状态标记（持久化存储）
@@ -610,6 +765,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             savedListHtml,
             loggedIn,
             currentFavoriteId,
+            currentLiveArea,
+            currentLiveSort,
           });
         }
 
@@ -642,6 +799,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             // 回退到列表模式，从缓存中恢复进入播放器前的列表内容
             isPlayerMode = false;
             tabBar.style.display = 'flex';
+            /* 修改日期：2026-05-11 zls3434 恢复内容区域内边距（播放器模式已将其设为 0） */
+            contentEl.style.padding = '';
             if (savedState.savedListHtml) {
               // 恢复进入播放器前的列表内容
               contentEl.innerHTML = savedState.savedListHtml;
@@ -808,6 +967,11 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
          */
         contentEl.addEventListener('click', (e) => {
           const target = e.target;
+          // 关闭排序下拉列表（点击非下拉列表区域时自动关闭）
+          if (!target.closest('.live-sort-select')) {
+            var sortDropdown = document.getElementById('live-sort-dropdown');
+            if (sortDropdown) { sortDropdown.classList.remove('show'); }
+          }
           if (target.classList.contains('follow-sub-tab')) {
             const subView = target.dataset.subView;
             if (subView && !isPlayerMode) {
@@ -890,6 +1054,61 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           }
 
           /**
+           * 直播分区标签点击事件处理
+           *
+           * 修改日期：2026-05-04
+           * 修改人：zls3434
+           * 修改目的：支持按分区筛选推荐直播间
+           */
+          if (target.classList.contains('live-area-tab')) {
+            var areaId = parseInt(target.dataset.areaId, 10);
+            if (!isNaN(areaId) && areaId !== currentLiveArea) {
+              currentLiveArea = areaId;
+              contentEl.querySelectorAll('.live-area-tab').forEach(function(btn) { btn.classList.remove('active'); });
+              target.classList.add('active');
+              showLoading();
+              vscodeApi.postMessage({ type: 'changeLiveArea', areaId: areaId });
+              saveState();
+            }
+          }
+
+          /**
+           * 直播排序下拉按钮点击事件处理
+           *
+           * 修改日期：2026-05-04
+           * 修改人：zls3434
+           * 修改目的：切换排序下拉列表的显示/隐藏
+           */
+          if (target.classList.contains('live-sort-toggle') || target.closest('.live-sort-toggle')) {
+            var dropdown = document.getElementById('live-sort-dropdown');
+            if (dropdown) {
+              dropdown.classList.toggle('show');
+            }
+          }
+
+          /**
+           * 直播排序下拉选项点击事件处理
+           *
+           * 修改日期：2026-05-04
+           * 修改人：zls3434
+           * 修改目的：选择排序方式后关闭下拉列表并重新加载
+           */
+          if (target.classList.contains('live-sort-option')) {
+            var sortType = target.dataset.sortType;
+            if (sortType && sortType !== currentLiveSort) {
+              currentLiveSort = sortType;
+              var dropdown2 = document.getElementById('live-sort-dropdown');
+              if (dropdown2) { dropdown2.classList.remove('show'); }
+              showLoading();
+              vscodeApi.postMessage({ type: 'changeLiveSort', sortType: sortType });
+              saveState();
+            } else {
+              var dropdown3 = document.getElementById('live-sort-dropdown');
+              if (dropdown3) { dropdown3.classList.remove('show'); }
+            }
+          }
+
+          /**
            * 返回关注列表按钮事件
            *
            * 修改日期：2026-05-07
@@ -901,6 +1120,16 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             viewCache[currentView] = contentEl.innerHTML;
             currentView = 'follows';
             vscodeApi.postMessage({ type: 'goBack' });
+          }
+          /**
+           * 全部已读按钮点击事件
+           *
+           * 修改日期：2026-05-12
+           * 修改人：zls3434
+           * 修改目的：一键标记所有关注UP主的视频红点为已读
+           */
+          if (target && target.id === 'btn-mark-all-read') {
+            vscodeApi.postMessage({ type: 'markAllRead' });
           }
         });
 
@@ -1111,11 +1340,53 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         /**
          * 渲染推荐直播列表
          */
+        /**
+         * 渲染推荐直播列表
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：新增分区子标签和排序切换按钮
+         */
         function renderLiveList(lives) {
-          let html = '<div class="card-list">' + buildLiveCards(lives);
+          let html = buildLiveSubBar();
+          html += '<div class="card-list">' + buildLiveCards(lives);
           if (hasMoreData) { html += '<div id="load-more-indicator" class="status-area" style="display:none"><div class="loading-spinner"></div><span class="msg">加载更多...</span></div>'; }
           html += '</div>';
           contentEl.innerHTML = html;
+        }
+
+        /**
+         * 构建直播分区子标签和排序切换栏
+         *
+         * 修改日期：2026-05-04
+         * 修改人：zls3434
+         * 修改目的：新增分区筛选和排序切换UI
+         */
+        function buildLiveSubBar() {
+          var areas = [
+            { value: 0, label: '推荐' },
+            { value: 2, label: '网游' },
+            { value: 3, label: '手游' },
+            { value: 6, label: '单机' },
+            { value: 1, label: '娱乐' },
+            { value: 5, label: '电台' },
+          ];
+          var sortLabel = currentLiveSort === 'recommend' ? '推荐' : '人气';
+          var html = '<div class="live-sub-bar">';
+          html += '<div class="live-sub-tabs">';
+          areas.forEach(function(area) {
+            var activeClass = (currentLiveArea === area.value) ? ' active' : '';
+            html += '<button class="live-area-tab' + activeClass + '" data-area-id="' + area.value + '">' + area.label + '</button>';
+          });
+          html += '</div>';
+          html += '<div class="live-sort-select">';
+          html += '<button class="live-sort-toggle' + (currentLiveSort !== 'online' ? ' active' : '') + '" id="live-sort-toggle">' + sortLabel + ' <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg></button>';
+          html += '<div class="live-sort-dropdown" id="live-sort-dropdown">';
+          html += '<button class="live-sort-option' + (currentLiveSort === 'recommend' ? ' active' : '') + '" data-sort-type="recommend">推荐</button>';
+          html += '<button class="live-sort-option' + (currentLiveSort === 'online' ? ' active' : '') + '" data-sort-type="online">人气</button>';
+          html += '</div></div>';
+          html += '</div>';
+          return html;
         }
 
         /**
@@ -1169,11 +1440,22 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
          * @param {string} activeView - 当前激活的子视图名称
          * @returns {string} 子Tab栏 HTML
          */
+        /**
+         * 构建关注子标签栏
+         *
+         * 修改日期：2026-05-12
+         * 修改人：zls3434
+         * 修改目的：关注列表子标签栏增加"全部已读"按钮
+         */
         function buildFollowSubTabs(activeView) {
           let html = '<div class="follow-sub-tabs">';
           html += '<button class="follow-sub-tab' + (activeView === 'followsVideos' ? ' active' : '') + '" data-sub-view="followsVideos">动态</button>';
           html += '<button class="follow-sub-tab' + (activeView === 'followsLive' ? ' active' : '') + '" data-sub-view="followsLive">直播中</button>';
           html += '<button class="follow-sub-tab' + (activeView === 'follows' ? ' active' : '') + '" data-sub-view="follows">关注列表</button>';
+          /* 全部已读按钮：仅关注列表视图显示 */
+          if (activeView === 'follows') {
+            html += '<button class="mark-all-read-btn" id="btn-mark-all-read" title="标记所有红点为已读">全部已读</button>';
+          }
           html += '</div>';
           return html;
         }
@@ -1476,6 +1758,10 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
         /**
          * 进入播放器模式
+         *
+         * 修改日期：2026-05-11
+         * 修改人：zls3434
+         * 修改目的：优化播放器窗口铺满插件界面，移除内容区域内边距使播放器无间隙显示
          */
         function enterPlayerMode(data) {
           // 保存当前列表内容，退出播放器时恢复
@@ -1486,8 +1772,11 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
           // 切换 UI：隐藏 Tab 栏（含设置按钮）
           tabBar.style.display = 'none';
+          /* 修改日期：2026-05-11 zls3434 播放器模式下移除内容区域内边距，使播放器铺满界面 */
+          contentEl.style.padding = '0';
 
-          let html = '<div class="player-container" style="position:relative;">';
+          /* 修改日期：2026-05-11 zls3434 移除内联 style，改为使用 CSS class 控制播放器容器铺满布局 */
+          let html = '<div class="player-container">';
           html += '<div class="player-overlay" id="player-overlay">';
           html += '<button class="player-back-btn" id="player-btn-back" title="返回">◂</button>';
           html += '<div class="player-overlay-info">';
@@ -1497,9 +1786,11 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
           html += '<div class="player-video-area">';
           if (data.mediaType === 'video') {
-            html += '<video id="video-player" autoplay controls crossorigin="anonymous" style="width:100%;height:100%;object-fit:contain;"></video>';
+            /* 修改日期：2026-05-11 zls3434 移除 video 标签内联样式，使用 CSS class 控制布局和居中 */
+            html += '<video id="video-player" autoplay controls crossorigin="anonymous"></video>';
           } else if (data.mediaType === 'live') {
-            html += '<video id="video-player" autoplay crossorigin="anonymous" style="width:100%;height:100%;object-fit:contain;"></video>';
+            /* 修改日期：2026-05-11 zls3434 移除 video 标签内联样式，使用 CSS class 控制布局和居中 */
+            html += '<video id="video-player" autoplay crossorigin="anonymous"></video>';
             /* 修改日期：2026-05-06 zls3434 直播模式新增底部媒体控制栏：播放/暂停、音量调整、静音 */
             html += '<div class="player-controls" id="player-controls">';
             html += '<button class="player-ctrl-btn" id="ctrl-play-pause" title="播放/暂停">' + SVG_ICON_PAUSE + '</button>';
@@ -1752,11 +2043,17 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
         /**
          * 退出播放器模式，回到列表
+         *
+         * 修改日期：2026-05-11
+         * 修改人：zls3434
+         * 修改目的：退出播放器时恢复内容区域内边距样式
          */
         function exitPlayerMode() {
           isPlayerMode = false;
           saveState();
           tabBar.style.display = 'flex';
+          /* 修改日期：2026-05-11 zls3434 恢复内容区域的内边距样式 */
+          contentEl.style.padding = '';
 
           // 清理 flv.js 播放器（直播用）
           if (flvPlayer) {
