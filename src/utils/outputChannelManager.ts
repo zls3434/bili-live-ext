@@ -4,7 +4,7 @@
  *
  * 主要功能：
  * - 创建和管理 VSCode 输出面板中的通用日志输出通道
- * - 提供通用日志通道（bilibili），替代所有 console.log/warn/error
+ * - 提供通用日志通道（codebili），替代所有 console.log/warn/error
  * - 支持追加行、显示通道、清空内容等操作
  * - 日志输出格式包含毫秒级时间戳，便于精确定位事件时序
  *
@@ -15,7 +15,7 @@
  * @author zls3434
  * @date 2026-04-30
  * @modification 2026-04-30 zls3434 创建输出通道管理器，实现弹幕输出通道的创建和管理
- * @modification 2026-04-30 zls3434 添加通用日志通道，将所有 console 日志统一输出到 bilibili 通道
+ * @modification 2026-04-30 zls3434 添加通用日志通道，将所有 console 日志统一输出到 codebili 通道
  * @modification 2026-05-06 zls3434 移除弹幕通道方法，弹幕输出已迁移至独立弹幕面板 DanmakuPanelProvider
  * @modification 2026-05-06 zls3434 优化日志输出格式，增加毫秒级时间戳，便于精确定位事件时序
  */
@@ -49,7 +49,7 @@ export function formatTimestamp(): string {
  * 采用单例模式，确保输出通道全局唯一。
  *
  * 输出通道：
- * - 「bilibili」：通用日志通道（info/warn/error）
+ * - 「codebili」：通用日志通道（info/warn/error）
  *
  * 注意：弹幕专用通道（原「bilidm」）已移除，
  * 弹幕输出已迁移至独立的 DanmakuPanelProvider 弹幕面板
@@ -65,13 +65,13 @@ export class OutputChannelManager {
    * 私有构造函数，防止外部通过 new 创建
    *
    * 初始化时创建通用日志输出通道：
-   * - 「bilibili」：通用日志通道
+   * - 「codebili」：通用日志通道
    *
    * 注意：弹幕专用通道（原「bilidm」）已移除，
    * 弹幕输出已迁移至独立的 DanmakuPanelProvider 弹幕面板
    */
   private constructor() {
-    this.logChannel = vscode.window.createOutputChannel('bilibili');
+    this.logChannel = vscode.window.createOutputChannel('codebili');
   }
 
   /**
@@ -91,7 +91,7 @@ export class OutputChannelManager {
   /**
    * 输出信息级别日志
    *
-   * 同时写入「bilibili」输出通道和浏览器控制台，
+   * 同时写入「codebili」输出通道和浏览器控制台，
    * 日志格式：[时间戳] [INFO] 消息内容
    * 例如：[2026-05-06 14:30:25.137] [INFO] 代理服务器已启动
    *
@@ -101,13 +101,13 @@ export class OutputChannelManager {
   public info(message: string): void {
     const timestamp = formatTimestamp();
     this.logChannel.appendLine(`[${timestamp}] [INFO] ${message}`);
-    console.log(`[bilibili] [${timestamp}] [INFO] ${message}`);
+    console.log(`[codebili] [${timestamp}] [INFO] ${message}`);
   }
 
   /**
    * 输出警告级别日志
    *
-   * 同时写入「bilibili」输出通道和浏览器控制台，
+   * 同时写入「codebili」输出通道和浏览器控制台，
    * 日志格式：[时间戳] [WARN] 消息内容
    * 例如：[2026-05-06 14:30:25.137] [WARN] 获取数据失败
    *
@@ -117,13 +117,13 @@ export class OutputChannelManager {
   public warn(message: string): void {
     const timestamp = formatTimestamp();
     this.logChannel.appendLine(`[${timestamp}] [WARN] ${message}`);
-    console.warn(`[bilibili] [${timestamp}] [WARN] ${message}`);
+    console.warn(`[codebili] [${timestamp}] [WARN] ${message}`);
   }
 
   /**
    * 输出错误级别日志
    *
-   * 同时写入「bilibili」输出通道和浏览器控制台，
+   * 同时写入「codebili」输出通道和浏览器控制台，
    * 日志格式：[时间戳] [ERROR] 消息内容
    * 例如：[2026-05-06 14:30:25.137] [ERROR] 连接超时
    *
@@ -133,7 +133,7 @@ export class OutputChannelManager {
   public error(message: string): void {
     const timestamp = formatTimestamp();
     this.logChannel.appendLine(`[${timestamp}] [ERROR] ${message}`);
-    console.error(`[bilibili] [${timestamp}] [ERROR] ${message}`);
+    console.error(`[codebili] [${timestamp}] [ERROR] ${message}`);
   }
 
   /**

@@ -49,7 +49,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     logger.init(outputChannelManager);
     context.subscriptions.push(outputChannelManager);
 
-    logger.info('bilibili 扩展开始激活...');
+    logger.info('codebili 扩展开始激活...');
 
     // 步骤0：启动本地代理服务器（用于绕过 B站 CDN 403 防盗链）
     proxyServer = new ProxyServer();
@@ -70,7 +70,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // 步骤2：注册侧边栏 Webview 视图提供者
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(
-        'bilibili-main-view',
+        'codebili-main-view',
         provider,
         {
           webviewOptions: {
@@ -83,7 +83,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // 步骤2.5：注册弹幕面板 Webview 视图提供者
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(
-        'bilibili-danmaku-panel',
+        'codebili-danmaku-panel',
         danmakuPanel,
         {
           webviewOptions: {
@@ -98,14 +98,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     // 步骤3：注册登录命令
     context.subscriptions.push(
-      vscode.commands.registerCommand('bilibili.login', () => {
+      vscode.commands.registerCommand('codebili.login', () => {
         provider.initiateLogin();
       })
     );
 
     // 步骤4：注册打开视频命令
     context.subscriptions.push(
-      vscode.commands.registerCommand('bilibili.openVideo', (bvid?: string) => {
+      vscode.commands.registerCommand('codebili.openVideo', (bvid?: string) => {
         if (bvid) {
           provider.openVideo(bvid);
         } else {
@@ -123,7 +123,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     // 步骤5：注册打开直播命令
     context.subscriptions.push(
-      vscode.commands.registerCommand('bilibili.openLive', (roomId?: number) => {
+      vscode.commands.registerCommand('codebili.openLive', (roomId?: number) => {
         if (roomId) {
           provider.openLive(roomId);
         } else {
@@ -148,15 +148,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     // 步骤6：注册返回上一页命令
     context.subscriptions.push(
-      vscode.commands.registerCommand('bilibili.goBack', () => {
+      vscode.commands.registerCommand('codebili.goBack', () => {
         provider.goBack();
       })
     );
 
-    logger.info('bilibili 扩展激活完成');
+    logger.info('codebili 扩展激活完成');
   } catch (error) {
-    logger.error(`bilibili 扩展激活失败: ${error}`);
-    vscode.window.showErrorMessage(`bilibili 扩展激活失败: ${error}`);
+    logger.error(`codebili 扩展激活失败: ${error}`);
+    vscode.window.showErrorMessage(`codebili 扩展激活失败: ${error}`);
   }
 }
 

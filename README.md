@@ -1,4 +1,4 @@
-# B站直播与视频浏览器 (bili-live-ext)
+# B站直播与视频浏览器 CodeBili
 
 在 VSCode / Trae 中浏览 B站（bilibili）直播和视频的扩展插件，无需离开编辑器即可查看关注的动态、收藏的视频以及平台推荐内容。
 
@@ -41,7 +41,7 @@ code --install-extension bili-live-ext-0.1.2.vsix
 
 ## 使用说明
 
-1. 安装后，点击 VSCode 侧边栏资源管理器下方的 **bilibili** 图标
+1. 安装后，点击 VSCode 侧边栏资源管理器下方的 **CodeBili** 图标
 2. 首次使用点击「登录」按钮，使用 B站 App 扫描二维码登录
 3. 登录成功后，通过顶部 Tab 切换不同内容视图
 4. 点击视频或直播间条目可直接在抽屉中播放
@@ -130,10 +130,10 @@ bili-live-ext/
 
 | 命令                   | 说明            |
 | -------------------- | ------------- |
-| `bilibili.login`     | B站扫码登录        |
-| `bilibili.openVideo` | 打开视频（输入 BV 号） |
-| `bilibili.openLive`  | 打开直播（输入房间号）   |
-| `bilibili.goBack`    | 返回上一页         |
+| `codebili.login`     | B站扫码登录        |
+| `codebili.openVideo` | 打开视频（输入 BV 号） |
+| `codebili.openLive`  | 打开直播（输入房间号）   |
+| `codebili.goBack`    | 返回上一页         |
 
 ## 技术架构
 

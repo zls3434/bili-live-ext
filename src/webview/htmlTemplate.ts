@@ -51,7 +51,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' ${webview.cspSource}; img-src https: data:; media-src https: http://127.0.0.1:* blob:; connect-src https: wss: http://127.0.0.1:*;">
-      <title>bilibili 浏览</title>
+      <title>CodeBili</title>
       <style>
         /* ========== 全局重置与基础样式 ========== */
         * { margin: 0; padding: 0; box-sizing: border-box; }

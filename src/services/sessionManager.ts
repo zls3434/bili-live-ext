@@ -19,7 +19,7 @@ import * as vscode from 'vscode';
 import axios from 'axios';
 
 /** globalState 中存储 Cookie 的 key 常量 */
-const SESSION_COOKIE_KEY = 'bilibili.session.cookie';
+const SESSION_COOKIE_KEY = 'codebili.session.cookie';
 
 /**
  * 会话管理器类

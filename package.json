@@ -1,6 +1,6 @@
 {
   "name": "bili-live-ext",
-  "displayName": "bilibili",
+  "displayName": "CodeBili",
   "description": "在 VSCode 中浏览 B站（bilibili）直播和视频",
   "version": "0.1.2",
   "publisher": "zls3434",
@@ -17,15 +17,15 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:bilibili-main-view",
-    "onView:bilibili-danmaku-panel"
+    "onView:codebili-main-view",
+    "onView:codebili-danmaku-panel"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "panel": [
         {
-          "id": "bilibili-panel",
+          "id": "codebili-panel",
           "title": "弹幕",
           "icon": "media/icon.png"
         }

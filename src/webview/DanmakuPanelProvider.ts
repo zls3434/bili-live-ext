@@ -35,7 +35,7 @@ import { logger } from '../utils/logger';
  * - 维护当前弹幕面板的模式（直播/视频）和状态
  *
  * 使用方式：
- * 1. 在 extension.ts 中注册：vscode.window.registerWebviewViewProvider('bilibili-danmaku-panel', provider)
+ * 1. 在 extension.ts 中注册：vscode.window.registerWebviewViewProvider('codebili-danmaku-panel', provider)
  * 2. 直播时调用 activateForLive(roomId) 激活弹幕面板
  * 3. 视频时调用 activateForVideo(bvid, cid) 激活弹幕面板
  * 4. 通过 appendDanmaku(item) 推送弹幕数据
@@ -264,7 +264,7 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
 
     // 自动展开弹幕面板，确保用户进入直播时能看到弹幕
     // 使用命令聚焦面板视图，比 show() 更可靠（面板未 resolve 时也能工作）
-    vscode.commands.executeCommand('bilibili-danmaku-panel.focus');
+    vscode.commands.executeCommand('codebili-danmaku-panel.focus');
 
     logger.info(`弹幕面板已激活为直播模式，房间号: ${roomId}`);
   }
@@ -296,7 +296,7 @@ export class DanmakuPanelProvider implements vscode.WebviewViewProvider {
     });
 
     // 自动展开弹幕面板，确保用户进入视频播放时能看到弹幕
-    vscode.commands.executeCommand('bilibili-danmaku-panel.focus');
+    vscode.commands.executeCommand('codebili-danmaku-panel.focus');
 
     logger.info(`弹幕面板已激活为视频模式，BV号: ${bvid}, cid: ${cid}`);
   }

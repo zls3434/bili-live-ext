@@ -3,7 +3,7 @@
  * @description B站主视图 Webview 提供者
  *
  * 主要功能：
- * - 管理侧边栏中 bilibili 浏览面板的 Webview 生命周期
+ * - 管理侧边栏中 CodeBili 浏览面板的 Webview 生命周期
  * - 提供4个顶部Tab切换按钮（我的关注/我的收藏/推荐视频/推荐直播间）
  * - 实现列表视图与播放器视图之间的切换机制
  * - 处理 Webview 与扩展主进程之间的双向消息通信
@@ -287,7 +287,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
           qrCodeUrl: '',
           qrCodeKey: '',
         };
-        logger.info('bilibili 登录态已自动恢复');
+        logger.info('CodeBili 登录态已自动恢复');
 
         /**
          * 修复：恢复登录态后主动通知 Webview 更新 UI
@@ -951,7 +951,7 @@ export class BiliMainViewProvider implements vscode.WebviewViewProvider {
               break;
             }
             case 'login': {
-              vscode.commands.executeCommand('bilibili.login');
+              vscode.commands.executeCommand('codebili.login');
               break;
             }
             case 'logout': {

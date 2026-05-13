@@ -4,7 +4,7 @@
  *
  * 主要功能：
  * - 提供全局的日志输出接口，替代 console.log/warn/error
- * - 日志同时输出到 VSCode 输出通道（bilibili）和控制台
+ * - 日志同时输出到 VSCode 输出通道（codebili）和控制台
  * - 非 VSCode 环境下自动降级为纯 console 输出
  * - 日志输出格式包含毫秒级时间戳，便于精确定位事件时序
  *
@@ -66,7 +66,7 @@ class Logger {
       this.channelManager.info(message);
     } else {
       const timestamp = formatTimestamp();
-      console.log(`[bilibili] [${timestamp}] [INFO] ${message}`);
+      console.log(`[codebili] [${timestamp}] [INFO] ${message}`);
     }
   }
 
@@ -84,7 +84,7 @@ class Logger {
       this.channelManager.warn(message);
     } else {
       const timestamp = formatTimestamp();
-      console.warn(`[bilibili] [${timestamp}] [WARN] ${message}`);
+      console.warn(`[codebili] [${timestamp}] [WARN] ${message}`);
     }
   }
 
@@ -102,7 +102,7 @@ class Logger {
       this.channelManager.error(message);
     } else {
       const timestamp = formatTimestamp();
-      console.error(`[bilibili] [${timestamp}] [ERROR] ${message}`);
+      console.error(`[codebili] [${timestamp}] [ERROR] ${message}`);
     }
   }
 }
